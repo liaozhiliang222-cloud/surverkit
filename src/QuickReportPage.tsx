@@ -6,7 +6,19 @@ import { saveAs } from "file-saver";
 import { Document, Packer, Paragraph, TextRun } from "docx";
 import { now } from "./db";
 import type { Project, ResearchType, ProjectStatus } from "./types";
-import { isLocalOnlyFeatureAvailable } from "./aiClient";
+import { isLocalOnlyFeatureAvailable, hasUserApiKey } from "./aiClient";
+
+function isCloudMode(): boolean {
+  const url = (import.meta as any).env?.VITE_AI_API_URL;
+  return !url || url === "/api" || (!url.includes("127.0.0.1") && !url.includes("localhost"));
+}
+
+function isAiReady(aiHealth: any): boolean {
+  if (hasUserApiKey()) return true;
+  if (aiHealth?.configured) return true;
+  if (aiHealth === null && isCloudMode()) return true;
+  return false;
+}
 
 export default function QuickReportPage() {
   const {
@@ -991,10 +1003,10 @@ export default function QuickReportPage() {
       )}
 
       {/* AI 服务状态 */}
-      {!aiHealth?.configured && (
+      {!isAiReady(aiHealth) && (
         <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3">
           <p className="text-xs text-amber-700">
-            AI 服务未启动。请在终端运行 <code className="rounded bg-amber-100 px-1">npm run ai</code> 后重试。
+            AI 服务暂不可用，请在设置页面配置 API Key
           </p>
         </div>
       )}

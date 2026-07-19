@@ -1,4 +1,4 @@
-import { create } from "zustand";
+﻿import { create } from "zustand";
 import {
   getAiHealth,
   hasUserApiKey,
@@ -18,6 +18,29 @@ import {
   type NativeTemplateMeta,
 } from "./aiClient";
 import { db, uid, now } from "./db";
+
+// ============================================================
+// AI 可用性判断
+// ============================================================
+// 同源部署模式下 AI 代理必然在线，判断逻辑：
+// 1. 用户配了自己的 API Key → 可用
+// 2. health 检查返回 configured=true → 可用
+// 3. health 还没加载完（null）但处于云端 → 乐观假设可用（避免误阻断）
+// 4. health 明确返回 configured=false 且用户没填 Key → 不可用
+// 判断是否为云端：BASE_URL 是相对路径（/api）或非 localhost
+function isCloudMode(): boolean {
+  const url = (import.meta as any).env?.VITE_AI_API_URL;
+  return !url || url === "/api" || (!url.includes("127.0.0.1") && !url.includes("localhost"));
+}
+
+function isAiReady(aiHealth: AiHealth | null): boolean {
+  if (hasUserApiKey()) return true;
+  if (aiHealth?.configured) return true;
+  // health 还没加载完 + 云端模式 → 乐观假设可用
+  if (aiHealth === null && isCloudMode()) return true;
+  // health 明确返回不可用
+  return false;
+}
 import { safeParseInsightPack, type InsightPack } from "./ppt2/schemas/insight";
 import { safeParseSlidePlans, type SlidePlan } from "./ppt2/schemas/slidePlan";
 import type { Storyline } from "./ppt2/schemas/storyline";
@@ -208,7 +231,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   generateThumbnails: async () => {
     const { proSlides, aiHealth, addToast } = get();
-    const aiReady = aiHealth?.configured || hasUserApiKey();
+    const aiReady = isAiReady(aiHealth);
     if (!proSlides || proSlides.length === 0) {
       addToast("没有可预览的页面", "error");
       return;
@@ -234,7 +257,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   runQACheck: async () => {
     const { proSlides, aiHealth, addToast } = get();
-    const aiReady = aiHealth?.configured || hasUserApiKey();
+    const aiReady = isAiReady(aiHealth);
     if (!proSlides || proSlides.length === 0) {
       addToast("没有可质检的页面", "error");
       return;
@@ -260,7 +283,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   regenerateSingleSlide: async (slideId: string, feedback?: string) => {
     const { proSlides, proInsightPack, aiHealth, addToast } = get();
-    const aiReady = aiHealth?.configured || hasUserApiKey();
+    const aiReady = isAiReady(aiHealth);
     if (!proSlides || !proInsightPack) {
       addToast("缺少洞察数据，无法重新生成", "error");
       return;
@@ -318,7 +341,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   loadNativeTemplates: async () => {
     const { aiHealth, addToast } = get();
-    const aiReady = aiHealth?.configured || hasUserApiKey();
+    const aiReady = isAiReady(aiHealth);
     if (!aiReady) {
       addToast("AI 服务未启动", "error");
       return;
@@ -338,7 +361,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   renderWithNativeTemplate: async () => {
     const { proSlides, proStoryline, aiHealth, addToast } = get();
-    const aiReady = aiHealth?.configured || hasUserApiKey();
+    const aiReady = isAiReady(aiHealth);
     if (!proSlides || proSlides.length === 0) {
       addToast("没有可导出的页面规划", "error");
       return;
@@ -412,13 +435,13 @@ export const useStore = create<AppState>((set, get) => ({
 
   startProReport: async () => {
     const { quickTranscripts, quickContext, aiHealth, proOptions, addToast } = get();
-    const aiReady = aiHealth?.configured || hasUserApiKey();
+    const aiReady = isAiReady(aiHealth);
     if (quickTranscripts.length === 0) {
       addToast("请先上传至少1份笔录文件", "info");
       return;
     }
     if (!aiReady) {
-      addToast("AI 服务未启动，请在终端运行 npm run ai 后重试", "error");
+      addToast("AI 服务暂不可用，请在设置页面配置 API Key", "error");
       return;
     }
 
@@ -476,13 +499,13 @@ export const useStore = create<AppState>((set, get) => ({
 
   startQuickReport: async () => {
     const { quickTranscripts, quickContext, aiHealth, addToast } = get();
-    const aiReady = aiHealth?.configured || hasUserApiKey();
+    const aiReady = isAiReady(aiHealth);
     if (quickTranscripts.length === 0) {
       addToast("请先上传至少1份笔录文件", "info");
       return;
     }
     if (!aiReady) {
-      addToast("AI 服务未启动，请在终端运行 npm run ai 后重试", "error");
+      addToast("AI 服务暂不可用，请在设置页面配置 API Key", "error");
       return;
     }
     // 如果有已完成的旧结果，保留笔录但覆盖结果

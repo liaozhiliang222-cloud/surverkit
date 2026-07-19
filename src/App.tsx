@@ -33,6 +33,24 @@ import type {
   TagType,
 } from "./types";
 
+// 判断是否为云端部署模式：BASE_URL 是相对路径（/api）或非 localhost
+function isCloudMode(): boolean {
+  const url = (import.meta as any).env?.VITE_AI_API_URL;
+  return !url || url === "/api" || (!url.includes("127.0.0.1") && !url.includes("localhost"));
+}
+
+// AI 可用性判断：
+// 1. 用户配了自己的 API Key → 可用
+// 2. health 检查返回 configured=true → 可用
+// 3. health 还没加载完（null）但处于云端 → 乐观假设可用（避免误阻断）
+// 4. health 明确返回 configured=false 且用户没填 Key → 不可用
+function isAiReady(aiHealth: any): boolean {
+  if (hasUserApiKey()) return true;
+  if (aiHealth?.configured) return true;
+  if (aiHealth === null && isCloudMode()) return true;
+  return false;
+}
+
 const researchTypes: ResearchType[] = [
   "用户访谈",
   "市场深访",
@@ -1588,7 +1606,7 @@ function InsightsPage() {
     setAiStatus("一键洞察：正在生成本地规则分析...");
     try {
       await generateInsights();
-      const useAi = aiHealth?.configured || hasUserApiKey();
+      const useAi = isAiReady(aiHealth);
       if (useAi) {
         setAiStatus("一键洞察：AI 正在跨访谈深度分析...");
         try {
@@ -1669,7 +1687,7 @@ function InsightsPage() {
             本地规则分析
           </button>
           <button
-            disabled={!(aiHealth?.configured || hasUserApiKey()) || aiRunning}
+            disabled={!isAiReady(aiHealth) || aiRunning}
             className="btn-ghost"
             onClick={() => void generateBailianInsights()}
           >
@@ -1804,9 +1822,9 @@ function InsightsPage() {
         </div>
       </div>
       <div
-        className={`rounded-xl border p-3 text-sm ${aiHealth?.configured || hasUserApiKey() ? "border-green-200 bg-green-50 text-green-800" : "border-slate-200 bg-white text-slate-600"}`}
+        className={`rounded-xl border p-3 text-sm ${isAiReady(aiHealth) ? "border-green-200 bg-green-50 text-green-800" : "border-slate-200 bg-white text-slate-600"}`}
       >
-        {aiHealth?.configured || hasUserApiKey()
+        {isAiReady(aiHealth)
           ? `AI已连接 · ${getUserAiConfig()?.model || aiHealth?.model}`
           : "请在设置页面配置 API Key"}
         {aiStatus && <span className="ml-2">{aiStatus}</span>}
@@ -2063,7 +2081,7 @@ function ReportPage() {
 
   async function oneClickReport() {
     if (!project) return;
-    if (!aiHealth?.configured && !hasUserApiKey()) {
+    if (!isAiReady(aiHealth)) {
       addToast("AI 服务暂不可用，请稍后重试", "error");
       return;
     }
@@ -2175,8 +2193,8 @@ function ReportPage() {
       addToast("请先上传至少1份笔录文件", "info");
       return;
     }
-    if (!aiHealth?.configured && !hasUserApiKey()) {
-      addToast("AI 服务未启动，请在终端运行 npm run ai 后重试", "error");
+    if (!isAiReady(aiHealth)) {
+      addToast("AI 服务暂不可用，请在设置页面配置 API Key", "error");
       return;
     }
     setQuickGenerating(true);
@@ -2290,7 +2308,7 @@ function ReportPage() {
           </Link>
           <button
             className="btn-primary"
-            disabled={aiGenerating || (!aiHealth?.configured && !hasUserApiKey())}
+            disabled={aiGenerating || !isAiReady(aiHealth)}
             onClick={() => void oneClickReport()}
           >
             {aiGenerating ? "AI 生成中..." : "一键生成报告"}
@@ -2387,7 +2405,7 @@ function ReportPage() {
             </div>
             <button
               className="btn-primary mt-3 w-full"
-              disabled={quickGenerating || (!aiHealth?.configured && !hasUserApiKey())}
+              disabled={quickGenerating || !isAiReady(aiHealth)}
               onClick={() => void oneClickTranscriptReport()}
             >
               {quickGenerating ? "AI 分析笔录中..." : `从 ${uploadedTranscripts.length} 份笔录一键生成报告`}
