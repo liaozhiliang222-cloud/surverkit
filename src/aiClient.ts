@@ -15,6 +15,68 @@ import type {
 // 本地开发模式：指向本机 Python 代理 http://127.0.0.1:8766
 const BASE_URL = ((import.meta.env.VITE_AI_API_URL || "/api") as string).replace(/\/$/, "");
 
+// ============================================================
+// 用户 AI 配置（localStorage 存储）
+// ============================================================
+
+export interface UserAiConfig {
+  apiKey: string;
+  model: string;
+  baseUrl: string;
+  provider: string;
+}
+
+const STORAGE_KEY = "researchbox-ai-config";
+
+export function getUserAiConfig(): UserAiConfig | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed.apiKey) return null;
+    return {
+      apiKey: parsed.apiKey,
+      model: parsed.model || "deepseek-v4-flash",
+      baseUrl: parsed.baseUrl || "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      provider: parsed.provider || "dashscope",
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function setUserAiConfig(config: UserAiConfig): void {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+}
+
+export function clearUserAiConfig(): void {
+  localStorage.removeItem(STORAGE_KEY);
+}
+
+/**
+ * 检查用户是否配置了自己的 API Key
+ */
+export function hasUserApiKey(): boolean {
+  return !!getUserAiConfig()?.apiKey;
+}
+
+/**
+ * 构造请求头，附加用户 AI 配置
+ */
+function buildHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...extra,
+  };
+  const config = getUserAiConfig();
+  if (config) {
+    headers["X-User-API-Key"] = config.apiKey;
+    headers["X-User-Model"] = config.model;
+    headers["X-User-Base-URL"] = config.baseUrl;
+  }
+  return headers;
+}
+
 /**
  * 是否为云环境（AI 代理跑在 Cloudflare Worker 上）
  *
@@ -41,7 +103,7 @@ export function isLocalOnlyFeatureAvailable(): boolean {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE_URL}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+    headers: buildHeaders(init?.headers as Record<string, string> | undefined),
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
@@ -57,6 +119,42 @@ export interface AiHealth {
   model: string;
 }
 export const getAiHealth = () => request<AiHealth>("/health");
+
+/**
+ * 测试 AI 连接（使用用户配置的 API Key）
+ * 在设置页面点击"测试连接"时调用
+ */
+export async function testAiConnection(config: UserAiConfig): Promise<{
+  ok: boolean;
+  message: string;
+  model?: string;
+}> {
+  try {
+    const response = await fetch(`${BASE_URL}/health`, {
+      method: "GET",
+      headers: {
+        "X-User-API-Key": config.apiKey,
+        "X-User-Model": config.model,
+        "X-User-Base-URL": config.baseUrl,
+      },
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      return { ok: false, message: body.detail || `HTTP ${response.status}` };
+    }
+    const data = await response.json();
+    return {
+      ok: true,
+      message: `连接成功 · 模型：${config.model}`,
+      model: config.model,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      message: e instanceof Error ? e.message : "连接失败",
+    };
+  }
+}
 
 export async function correctWithAi(
   text: string,
@@ -370,9 +468,18 @@ export async function uploadNativeTemplate(file: File): Promise<UploadTemplateRe
   const formData = new FormData();
   formData.append("file", file);
 
+  const config = getUserAiConfig();
+  const headers: Record<string, string> = {};
+  if (config) {
+    headers["X-User-API-Key"] = config.apiKey;
+    headers["X-User-Model"] = config.model;
+    headers["X-User-Base-URL"] = config.baseUrl;
+  }
+
   const response = await fetch(`${BASE_URL}/report/upload-template`, {
     method: "POST",
     body: formData,
+    headers,
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));

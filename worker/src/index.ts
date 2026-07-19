@@ -141,16 +141,29 @@ export default {
           model: env.AI_MODEL || "deepseek-v4-flash",
           authEnabled: env.AUTH_ENABLED === "true",
           mode: "unified",
+          supportsUserApiKey: true,
         });
       }
 
       // 鉴权（除 health 外所有端点）
       checkAuth(env, request);
 
+      // 提取用户 API Key（优先于 Worker Secret）
+      // 用户在前端设置页面输入的 API Key，通过 X-User-API-Key 请求头传递
+      const userApiKey = request.headers.get("X-User-API-Key") || undefined;
+
+      // 同时支持用户自定义模型和接口地址
+      const userModel = request.headers.get("X-User-Model") || undefined;
+      const userBaseUrl = request.headers.get("X-User-Base-URL") || undefined;
+      if (userModel || userBaseUrl) {
+        (env as any).AI_MODEL = userModel || env.AI_MODEL;
+        (env as any).AI_BASE_URL = userBaseUrl || env.AI_BASE_URL;
+      }
+
       // ====== 笔录校正 ======
       if (path === "/api/correct" && method === "POST") {
         const body = await parseJsonBody(request);
-        const result = await chat(env, CORRECT_SYSTEM_PROMPT, JSON.stringify(body));
+        const result = await chat(env, CORRECT_SYSTEM_PROMPT, JSON.stringify(body), 0.2, userApiKey);
         return jsonResponse(env, requestOrigin, {
           data: result.data, usage: result.usage,
           model: env.AI_MODEL || "deepseek-v4-flash",
@@ -160,7 +173,7 @@ export default {
       // ====== 单访谈分析 ======
       if (path === "/api/analyze/interview" && method === "POST") {
         const body = await parseJsonBody(request);
-        const result = await chat(env, ANALYZE_INTERVIEW_SYSTEM_PROMPT, JSON.stringify(body));
+        const result = await chat(env, ANALYZE_INTERVIEW_SYSTEM_PROMPT, JSON.stringify(body), 0.2, userApiKey);
         return jsonResponse(env, requestOrigin, {
           data: result.data, usage: result.usage,
           model: env.AI_MODEL || "deepseek-v4-flash",
@@ -170,7 +183,7 @@ export default {
       // ====== 项目跨访谈分析 ======
       if (path === "/api/analyze/project" && method === "POST") {
         const body = await parseJsonBody(request);
-        const result = await chat(env, ANALYZE_PROJECT_SYSTEM_PROMPT, JSON.stringify(body), 0.15);
+        const result = await chat(env, ANALYZE_PROJECT_SYSTEM_PROMPT, JSON.stringify(body), 0.15, userApiKey);
         return jsonResponse(env, requestOrigin, {
           data: result.data, usage: result.usage,
           model: env.AI_MODEL || "deepseek-v4-flash",
@@ -180,7 +193,7 @@ export default {
       // ====== 批量编码 ======
       if (path === "/api/code/batch" && method === "POST") {
         const body = await parseJsonBody(request);
-        const result = await chat(env, CODE_BATCH_SYSTEM_PROMPT, JSON.stringify(body));
+        const result = await chat(env, CODE_BATCH_SYSTEM_PROMPT, JSON.stringify(body), 0.2, userApiKey);
         return jsonResponse(env, requestOrigin, {
           data: result.data, usage: result.usage,
           model: env.AI_MODEL || "deepseek-v4-flash",
@@ -190,7 +203,7 @@ export default {
       // ====== 维度小结 ======
       if (path === "/api/analyze/summary" && method === "POST") {
         const body = await parseJsonBody(request);
-        const result = await chat(env, ANALYZE_SUMMARY_SYSTEM_PROMPT, JSON.stringify(body));
+        const result = await chat(env, ANALYZE_SUMMARY_SYSTEM_PROMPT, JSON.stringify(body), 0.2, userApiKey);
         return jsonResponse(env, requestOrigin, {
           data: result.data, usage: result.usage,
           model: env.AI_MODEL || "deepseek-v4-flash",
@@ -200,7 +213,7 @@ export default {
       // ====== 角色识别 ======
       if (path === "/api/correct/roles" && method === "POST") {
         const body = await parseJsonBody(request);
-        const result = await chat(env, AUTO_ROLES_SYSTEM_PROMPT, JSON.stringify(body));
+        const result = await chat(env, AUTO_ROLES_SYSTEM_PROMPT, JSON.stringify(body), 0.2, userApiKey);
         return jsonResponse(env, requestOrigin, {
           data: result.data, usage: result.usage,
           model: env.AI_MODEL || "deepseek-v4-flash",
@@ -210,7 +223,7 @@ export default {
       // ====== 标签建议 ======
       if (path === "/api/tags/suggest" && method === "POST") {
         const body = await parseJsonBody(request);
-        const result = await chat(env, SUGGEST_TAGS_SYSTEM_PROMPT, JSON.stringify(body));
+        const result = await chat(env, SUGGEST_TAGS_SYSTEM_PROMPT, JSON.stringify(body), 0.2, userApiKey);
         return jsonResponse(env, requestOrigin, {
           data: result.data, usage: result.usage,
           model: env.AI_MODEL || "deepseek-v4-flash",
@@ -220,7 +233,7 @@ export default {
       // ====== 维度建议 ======
       if (path === "/api/dimensions/suggest" && method === "POST") {
         const body = await parseJsonBody(request);
-        const result = await chat(env, SUGGEST_DIMENSIONS_SYSTEM_PROMPT, JSON.stringify(body));
+        const result = await chat(env, SUGGEST_DIMENSIONS_SYSTEM_PROMPT, JSON.stringify(body), 0.2, userApiKey);
         return jsonResponse(env, requestOrigin, {
           data: result.data, usage: result.usage,
           model: env.AI_MODEL || "deepseek-v4-flash",
@@ -232,7 +245,7 @@ export default {
         const body = await parseJsonBody(request);
         const result = await chatWithRetry(
           env, TRANSCRIPT_REPORT_SYSTEM_PROMPT, JSON.stringify(body), 0.3, 2,
-          ["title", "markdown"],
+          ["title", "markdown"], userApiKey,
         );
         return jsonResponse(env, requestOrigin, {
           data: result.data, usage: result.usage,
@@ -248,7 +261,7 @@ export default {
         const userPrompt = buildInsightUserPrompt(transcripts, projectContext);
         const result = await chatWithRetry(
           env, INSIGHT_SYSTEM_PROMPT, userPrompt, 0.2, 2,
-          ["researchContext", "topics", "findings"],
+          ["researchContext", "topics", "findings"], userApiKey,
         );
         return jsonResponse(env, requestOrigin, {
           data: result.data, usage: result.usage,
@@ -264,7 +277,7 @@ export default {
         const userPrompt = buildSlideUserPrompt(insightPack, options);
         const result = await chatWithRetry(
           env, SLIDE_SYSTEM_PROMPT, userPrompt, 0.25, 2,
-          ["storyline", "slides"],
+          ["storyline", "slides"], userApiKey,
         );
         return jsonResponse(env, requestOrigin, {
           data: result.data, usage: result.usage,
@@ -313,7 +326,7 @@ ${JSON.stringify({
 
         const result = await chatWithRetry(
           env, regenSystemPrompt, regenUserPrompt, 0.3, 2,
-          ["slideType", "title", "content"],
+          ["slideType", "title", "content"], userApiKey,
         );
         // 确保保留原 slideId
         const regenerated = result.data;

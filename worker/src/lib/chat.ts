@@ -46,16 +46,21 @@ export function extractJson(content: string): any {
 
 /**
  * 调用百炼/OpenAI 兼容的 chat completions API
+ *
+ * API Key 优先级：
+ * 1. 请求头 X-User-API-Key（用户在前端设置页面手动输入）
+ * 2. Worker Secret DASHSCOPE_API_KEY（部署时配置的默认 Key）
  */
 export async function chat(
   env: Env,
   system: string,
   user: string,
   temperature = 0.2,
+  userApiKey?: string,
 ): Promise<ChatResult> {
-  const apiKey = env.DASHSCOPE_API_KEY;
+  const apiKey = userApiKey || env.DASHSCOPE_API_KEY;
   if (!apiKey) {
-    throw new HttpError(503, "未配置 AI API Key（请在 Worker 中设置 DASHSCOPE_API_KEY secret）");
+    throw new HttpError(503, "未配置 AI API Key（请在设置页面输入 API Key，或联系管理员配置 DASHSCOPE_API_KEY）");
   }
 
   const baseUrl = (env.AI_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/$/, "");
@@ -133,13 +138,14 @@ export async function chatWithRetry(
   temperature = 0.2,
   maxRetries = 2,
   requiredFields: string[] | null = null,
+  userApiKey?: string,
 ): Promise<ChatResult> {
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const retryTemp = temperature + 0.1 * attempt;
-      const result = await chat(env, system, user, retryTemp);
+      const result = await chat(env, system, user, retryTemp, userApiKey);
 
       // 结构校验
       if (requiredFields && result.data && typeof result.data === "object") {

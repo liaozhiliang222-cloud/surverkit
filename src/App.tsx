@@ -1,4 +1,4 @@
-import { FormEvent, Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, Suspense, lazy, useEffect, useMemo, useState } from "react";
 import {
   Link,
   NavLink,
@@ -6,17 +6,10 @@ import {
   Routes,
   useNavigate,
   useParams,
-  useSearchParams,
 } from "react-router-dom";
 import { useLiveQuery } from "dexie-react-hooks";
 import { saveAs } from "file-saver";
 import { Document, Packer, Paragraph, TextRun } from "docx";
-import {
-  cancelAsrTask,
-  getAsrTask,
-  submitAsrTask,
-  type AsrTask,
-} from "./asrClient";
 import { db, now, resetDemoData, uid } from "./db";
 import { parseTranscript } from "./correction";
 const TranscriptWorkspace = lazy(() => import("./TranscriptWorkspace").then((module) => ({ default: module.TranscriptWorkspace })));
@@ -24,7 +17,7 @@ const SummaryPage = lazy(() => import("./SummaryPage").then((module) => ({ defau
 const SettingsCenter = lazy(() => import("./SettingsCenter").then((module) => ({ default: module.SettingsCenter })));
 const QuickReportPage = lazy(() => import("./QuickReportPage"));
 import { exportResearchPptx } from "./p2Services";
-import { analyzeProjectWithAi, generateReportWithAi, generateReportFromTranscriptsWithAi } from "./aiClient";
+import { analyzeProjectWithAi, generateReportWithAi, generateReportFromTranscriptsWithAi, hasUserApiKey, getUserAiConfig } from "./aiClient";
 import { contraryCases, evidenceStrength, tagCooccurrence } from "./researchAnalytics";
 import { useStore, startHealthPolling, stopHealthPolling } from "./store";
 import { ToastContainer } from "./Toast";
@@ -84,7 +77,6 @@ function App() {
           <Route path="/summary" element={<Suspense fallback={<PageLoading />}><SummaryPage /></Suspense>} />
           <Route path="/knowledge" element={<KnowledgeSearchPage />} />
           <Route path="/projects/:projectId" element={<ProjectDetail />} />
-          <Route path="/upload" element={<UploadPage />} />
           <Route path="/transcript/:interviewId" element={<TranscriptPage />} />
           <Route path="/transcript/:interviewId/:mode" element={<TranscriptPage />} />
           <Route path="/insights/:projectId" element={<InsightsPage />} />
@@ -103,7 +95,6 @@ function App() {
 function Shell({ children }: { children: React.ReactNode }) {
   const projects = useLiveQuery(() => db.projects.count(), [], 0);
   const interviews = useLiveQuery(() => db.interviews.count(), [], 0);
-  const asrHealth = useStore((s) => s.asrHealth);
   const aiHealth = useStore((s) => s.aiHealth);
 
   useEffect(() => {
@@ -212,29 +203,14 @@ function Shell({ children }: { children: React.ReactNode }) {
         <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-900 p-3 text-xs">
           <div className="flex items-center gap-2">
             <span
-              className={`h-2 w-2 rounded-full ${asrHealth?.ok ? "bg-emerald-400" : "bg-red-400"}`}
+              className={`h-2 w-2 rounded-full ${hasUserApiKey() || aiHealth?.configured ? "bg-emerald-400" : "bg-amber-400"}`}
             />
             <span className="font-medium">
-              ASR Agent {asrHealth?.ok ? "已连接" : "未连接"}
+              AI 代理 {hasUserApiKey() || aiHealth?.configured ? "已连接" : "未配置 Key"}
             </span>
           </div>
           <p className="pl-4 text-slate-500">
-            {asrHealth?.ok
-              ? asrHealth.model.asr_ready
-                ? `${asrHealth.model.model_name} · 模型就绪`
-                : "模型未就绪"
-              : "服务启动中或暂不可用"}
-          </p>
-          <div className="mt-1 flex items-center gap-2">
-            <span
-              className={`h-2 w-2 rounded-full ${aiHealth?.configured ? "bg-emerald-400" : "bg-amber-400"}`}
-            />
-            <span className="font-medium">
-              AI 代理 {aiHealth?.configured ? "已连接" : "未连接"}
-            </span>
-          </div>
-          <p className="pl-4 text-slate-500">
-            {aiHealth?.configured ? `${aiHealth.model} · 可用` : "服务启动中或暂不可用"}
+            {getUserAiConfig()?.model || aiHealth?.model || "未配置"}
           </p>
         </div>
       </aside>
@@ -419,9 +395,6 @@ function CorrectionHub() {
             修正 ASR 错别字、添加标点、分配说话人角色。校正完成后即可进入标签编码。
           </p>
         </div>
-        <Link className="btn-primary" to="/upload">
-          导入新资料
-        </Link>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-3">
@@ -656,11 +629,7 @@ function InsightsHub() {
       {projectStats.length === 0 ? (
         <div className="rounded-xl border-2 border-dashed border-brand-300 bg-brand-50/30 p-6 text-center">
           <p className="text-sm text-slate-600">
-            还没有项目。先去
-            <Link to="/upload" className="font-medium text-brand-700 hover:underline">
-              {" "}录音转写{" "}
-            </Link>
-            导入访谈资料吧。
+            还没有项目。先在笔录校正中导入访谈资料吧。
           </p>
         </div>
       ) : (
@@ -1062,9 +1031,6 @@ function ProjectDetail() {
             <p className="mt-2 max-w-3xl text-slate-600">{project.objective}</p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Link to={`/upload?projectId=${project.id}`} className="btn-ghost">
-              导入笔录
-            </Link>
             <Link to={`/insights/${project.id}`} className="btn-primary">
               洞察面板
             </Link>
@@ -1209,719 +1175,6 @@ function ProjectDetail() {
         </div>
         <TagPanel projectId={project.id} />
       </div>
-    </section>
-  );
-}
-
-function UploadPage() {
-  const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const projects = useLiveQuery(() => db.projects.toArray(), [], []);
-  const [projectId, setProjectId] = useState("");
-  const [title, setTitle] = useState("");
-  const [respondentCode, setRespondentCode] = useState("");
-  const [text, setText] = useState("");
-  const [fileName, setFileName] = useState("");
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [status, setStatus] = useState("等待上传");
-  const [asrTask, setAsrTask] = useState<AsrTask | null>(null);
-  const [enableDiarization, setEnableDiarization] = useState(false);
-  const [step, setStep] = useState<1 | 2 | 3>(1);
-  const [importMode, setImportMode] = useState<"audio" | "text">("audio");
-  const [createdInterviewId, setCreatedInterviewId] = useState<string | null>(
-    null,
-  );
-  const asrSubmittingRef = useRef(false);
-  const activeTaskIdRef = useRef<string | null>(null);
-  const addToast = useStore((s) => s.addToast);
-
-  const agentHealth = useStore((s) => s.asrHealth);
-  const urlProjectId = searchParams.get("projectId");
-  const selectedProjectId = projectId || urlProjectId || projects[0]?.id || "";
-  const isAsrRunning = Boolean(
-    asrTask && !["已完成", "失败", "已取消"].includes(asrTask.status),
-  );
-
-  async function handleFile(file: File | undefined) {
-    if (!file) return;
-    if (asrSubmittingRef.current || isAsrRunning) {
-      setStatus("当前已有 ASR 任务在运行，请等待完成后再更换文件。");
-      return;
-    }
-    setSelectedFile(file);
-    setAsrTask(null);
-    setFileName(file.name);
-    if (/\.docx$/i.test(file.name)) {
-      setStatus("正在解析 DOCX 笔录...");
-      const mammoth = await import("mammoth");
-      const result = await mammoth.extractRawText({
-        arrayBuffer: await file.arrayBuffer(),
-      });
-      setText(result.value);
-      setStatus(
-        result.messages.length
-          ? `DOCX 已解析，发现 ${result.messages.length} 条格式提示，请预览后导入。`
-          : "DOCX 已解析，可预览并生成结构化笔录。",
-      );
-    } else if (
-      file.type.startsWith("text") ||
-      /\.(txt|srt|vtt)$/i.test(file.name)
-    ) {
-      setText(await file.text());
-      setStatus("已读取文本，可直接生成逐字稿");
-    } else {
-      setText("");
-      setStatus(
-        "已选择音频/视频。提交后将调用本地 ASR Agent，前端只轮询进度，不会加载模型。",
-      );
-    }
-    if (!title) setTitle(file.name.replace(/\.[^.]+$/, ""));
-  }
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    if (asrSubmittingRef.current || isAsrRunning) {
-      setStatus("当前转写任务仍在运行，请不要重复提交。");
-      return;
-    }
-    if (!selectedProjectId || !title.trim()) return;
-    const isTextImport = Boolean(text.trim());
-    if (!isTextImport && selectedFile) {
-      setStep(3);
-      await submitAudioToAgent(selectedFile);
-      return;
-    }
-    setStatus("正在生成标准化逐字稿 JSON...");
-    await createInterviewWithSegments(
-      createSegmentsFromText("", text),
-      text ? Math.max(60, text.length / 3) : 360,
-      "文本",
-    );
-  }
-
-  async function submitAudioToAgent(file: File) {
-    if (asrSubmittingRef.current) return;
-    if (!agentHealth) {
-      setStatus(
-        "转写服务暂不可用，可稍后重试，或先粘贴文本继续导入。",
-      );
-      return;
-    }
-    if (!agentHealth.model.asr_ready) {
-      setStatus(
-        `${agentHealth.model.model_name} 模型文件未就绪：缺少 ${agentHealth.model.missing.join("、")}。请检查 asr-agent/models 目录。`,
-      );
-      return;
-    }
-    asrSubmittingRef.current = true;
-    try {
-      setStatus("正在提交本地 ASR 任务...");
-      const task = await submitAsrTask(file, enableDiarization);
-      activeTaskIdRef.current = task.id;
-      setAsrTask(task);
-      await pollAsrTask(task.id);
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "提交 ASR 任务失败";
-      setStatus(
-        message === "Failed to fetch"
-          ? "无法连接本地 ASR Agent，请刷新页面或确认 Agent 已启动。"
-          : message,
-      );
-      setAsrTask(null);
-      activeTaskIdRef.current = null;
-      asrSubmittingRef.current = false;
-    }
-  }
-
-  async function pollAsrTask(taskId: string) {
-    let latest: AsrTask | null = null;
-    while (true) {
-      if (activeTaskIdRef.current !== taskId) return;
-      try {
-        latest = await getAsrTask(taskId);
-      } catch {
-        setStatus("当前 ASR 任务已失效，请重新提交。");
-        setAsrTask(null);
-        asrSubmittingRef.current = false;
-        activeTaskIdRef.current = null;
-        return;
-      }
-      if (activeTaskIdRef.current !== taskId) return;
-      setAsrTask(latest);
-      setStatus(`${latest.status} · ${latest.progress}%`);
-      if (latest.status === "已完成" && latest.result) {
-        const duration = latest.result.duration || 360;
-        const segments: Segment[] = latest.result.segments.map((segment) => ({
-          id: uid("seg"),
-          interviewId: "",
-          start: segment.start,
-          end: segment.end,
-          speakerId: segment.speaker_id,
-          role: segment.role === "研究员" ? "研究员" : "受访者",
-          text: segment.text,
-          confidence: segment.confidence || 0.9,
-          tags: [] as string[],
-          updatedAt: now(),
-        }));
-        await createInterviewWithSegments(segments, duration, "音频");
-        asrSubmittingRef.current = false;
-        activeTaskIdRef.current = null;
-        return;
-      }
-      if (latest.status === "失败" || latest.status === "已取消") {
-        setStatus(latest.error || latest.status);
-        asrSubmittingRef.current = false;
-        activeTaskIdRef.current = null;
-        return;
-      }
-      await sleep(1200);
-    }
-  }
-
-  async function cancelCurrentAsrTask() {
-    const taskId = activeTaskIdRef.current || asrTask?.id;
-    if (!taskId) return;
-    try {
-      await cancelAsrTask(taskId);
-      setStatus("已取消当前 ASR 任务。");
-    } catch {
-      setStatus("当前 ASR 任务已失效，请重新提交。");
-    } finally {
-      setAsrTask(null);
-      asrSubmittingRef.current = false;
-      activeTaskIdRef.current = null;
-    }
-  }
-
-  async function createInterviewWithSegments(
-    rawSegments: Segment[],
-    duration: number,
-    sourceType: Interview["sourceType"],
-  ) {
-    const timestamp = now();
-    const existingRespondents = await db.respondents
-      .where("projectId")
-      .equals(selectedProjectId)
-      .count();
-    const autoCode = `R${String(existingRespondents + 1).padStart(2, "0")}`;
-    const respondent = {
-      id: uid("respondent"),
-      projectId: selectedProjectId,
-      code: respondentCode || autoCode,
-      nickname: respondentCode || `受访者${existingRespondents + 1}`,
-      tags: [] as string[],
-      createdAt: timestamp,
-    };
-    const interview: Interview = {
-      id: uid("interview"),
-      projectId: selectedProjectId,
-      respondentId: respondent.id,
-      title: title.trim(),
-      sourceType,
-      fileName,
-      interviewDate: timestamp.slice(0, 10),
-      transcriptStatus: sourceType === "音频" ? "待校正" : "原始笔录",
-      analysisStatus: "未分析",
-      transcriptVersion: 1,
-      duration,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
-    const segments = rawSegments.length
-      ? rawSegments.map((segment) => ({
-          ...segment,
-          interviewId: interview.id,
-          updatedAt: timestamp,
-        }))
-      : createSegmentsFromText(interview.id, text);
-    await db.transaction(
-      "rw",
-      db.respondents,
-      db.interviews,
-      db.segments,
-      db.projects,
-      async () => {
-        await db.respondents.add(respondent);
-        await db.interviews.add(interview);
-        await db.segments.bulkAdd(segments);
-        await db.projects.update(selectedProjectId, { updatedAt: timestamp });
-      },
-    );
-    setCreatedInterviewId(interview.id);
-    setStep(3);
-    addToast(`访谈"${title.trim()}"已创建`);
-  }
-
-  const fileAccept =
-    importMode === "audio" ? ".mp3,.wav,.m4a,.mp4" : ".txt,.docx,.srt,.vtt";
-  const audioReady = Boolean(
-    agentHealth?.ok && agentHealth.model.asr_ready,
-  );
-  const canSubmit =
-    Boolean(selectedProjectId) &&
-    title.trim().length > 0 &&
-    !isAsrRunning &&
-    !asrSubmittingRef.current &&
-    (importMode === "audio" ? Boolean(selectedFile) : text.trim().length > 0);
-
-  function chooseMode(mode: "audio" | "text") {
-    setImportMode(mode);
-    // 切换模式时清理另一模式的残留输入，避免提交分支误判
-    if (mode === "audio") {
-      setText("");
-    } else {
-      setSelectedFile(null);
-      setFileName("");
-    }
-    setStep(2);
-  }
-
-  function resetForRetranscribe() {
-    setAsrTask(null);
-    setCreatedInterviewId(null);
-    asrSubmittingRef.current = false;
-    activeTaskIdRef.current = null;
-    setStatus("等待上传");
-    setStep(2);
-  }
-
-  function formatDuration(sec: number) {
-    const h = Math.floor(sec / 3600);
-    const m = Math.floor((sec % 3600) / 60);
-    const s = Math.floor(sec % 60);
-    const pad = (n: number) => n.toString().padStart(2, "0");
-    return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
-  }
-
-  const stepDefs: { n: number; label: string }[] = [
-    { n: 1, label: "选择导入方式" },
-    { n: 2, label: "填写信息" },
-    { n: 3, label: importMode === "audio" ? "处理与预览" : "完成" },
-  ];
-
-  const previewText =
-    asrTask?.result?.raw_text ||
-    asrTask?.result?.segments.map((s) => s.text).join(" ") ||
-    "";
-
-  return (
-    <section className="mx-auto max-w-4xl space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-slate-950">
-          上传访谈 / 导入文本
-        </h1>
-        <p className="mt-2 text-slate-600">
-          按步骤选择导入方式、填写访谈信息，即可生成可校正的逐字稿。
-        </p>
-      </div>
-
-      {/* 步骤条 */}
-      <ol className="flex items-center gap-2">
-        {stepDefs.map((s, idx) => {
-          const done = step > s.n;
-          const active = step === s.n;
-          return (
-            <li key={s.n} className="flex items-center gap-2">
-              <div className="flex items-center gap-2">
-                <span
-                  className={`flex h-8 w-8 items-center justify-center rounded-full text-sm font-bold ${
-                    done
-                      ? "bg-green-500 text-white"
-                      : active
-                        ? "bg-brand-500 text-white ring-4 ring-brand-100"
-                        : "bg-slate-200 text-slate-500"
-                  }`}
-                >
-                  {done ? (
-                    <svg viewBox="0 0 20 20" className="h-4 w-4" fill="currentColor">
-                      <path d="M7.5 13.5l-3-3 1.4-1.4 1.6 1.6 4.6-4.6L13.5 7.5z" />
-                    </svg>
-                  ) : (
-                    s.n
-                  )}
-                </span>
-                <span
-                  className={`text-sm font-medium ${
-                    active
-                      ? "text-brand-700"
-                      : done
-                        ? "text-slate-700"
-                        : "text-slate-400"
-                  }`}
-                >
-                  {s.label}
-                </span>
-              </div>
-              {idx < stepDefs.length - 1 && (
-                <span
-                  className={`h-px w-8 ${done ? "bg-green-400" : "bg-slate-200"}`}
-                />
-              )}
-            </li>
-          );
-        })}
-      </ol>
-
-      {/* 第 1 步：选择导入方式 */}
-      {step === 1 && (
-        <div className="grid gap-4 md:grid-cols-2">
-          <button
-            type="button"
-            onClick={() => chooseMode("audio")}
-            className={`card flex flex-col items-start gap-3 p-6 text-left transition hover:border-brand-400 hover:shadow-sm ${
-              importMode === "audio" ? "border-brand-400 ring-2 ring-brand-100" : ""
-            }`}
-          >
-            <div className="flex w-full items-center justify-between">
-              <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
-                <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="9" y="3" width="6" height="12" rx="3" />
-                  <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
-                </svg>
-              </span>
-              <span
-                className={`badge ${
-                  audioReady
-                    ? "bg-green-100 text-green-700"
-                    : agentHealth?.ok
-                      ? "bg-yellow-100 text-yellow-700"
-                      : "bg-slate-100 text-slate-600"
-                }`}
-              >
-                {audioReady
-                  ? "Agent 就绪"
-                  : agentHealth?.ok
-                    ? "模型未就绪"
-                    : "Agent 未连接"}
-              </span>
-            </div>
-            <h3 className="text-lg font-bold text-slate-950">音频转写</h3>
-            <p className="text-sm text-slate-600">
-              上传音频文件（mp3/wav/m4a/mp4），通过本地 ASR Agent 自动转写。
-            </p>
-          </button>
-          <button
-            type="button"
-            onClick={() => chooseMode("text")}
-            className={`card flex flex-col items-start gap-3 p-6 text-left transition hover:border-brand-400 hover:shadow-sm ${
-              importMode === "text" ? "border-brand-400 ring-2 ring-brand-100" : ""
-            }`}
-          >
-            <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600">
-              <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M7 3h7l5 5v13H7z" />
-                <path d="M14 3v5h5M9 13h7M9 17h5" />
-              </svg>
-            </span>
-            <h3 className="text-lg font-bold text-slate-950">文本导入</h3>
-            <p className="text-sm text-slate-600">
-              粘贴文本或上传文本文件（txt/docx/srt/vtt），自动切分为带时间戳的逐字稿。
-            </p>
-          </button>
-        </div>
-      )}
-
-      {/* 第 2 步：填写信息并上传 */}
-      {step === 2 && (
-        <form onSubmit={submit} className="card grid gap-4 p-6">
-          <div className="grid gap-4 md:grid-cols-2">
-            <Field label="所属项目">
-              <select
-                className="input"
-                value={selectedProjectId}
-                onChange={(e) => setProjectId(e.target.value)}
-              >
-                {projects.map((project) => (
-                  <option key={project.id} value={project.id}>
-                    {project.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="受访者编号">
-              <input
-                className="input"
-                value={respondentCode}
-                onChange={(e) => setRespondentCode(e.target.value)}
-                placeholder="例如 R02"
-              />
-            </Field>
-          </div>
-          <Field label="访谈标题" required>
-            <input
-              className="input"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="例如 R02 母乳喂养经历深访"
-            />
-          </Field>
-
-          {importMode === "audio" && (
-            <>
-              <div
-                className={`rounded-xl border p-4 text-sm ${
-                  audioReady
-                    ? "border-brand-200 bg-brand-50 text-brand-900"
-                    : "border-yellow-200 bg-yellow-50 text-yellow-900"
-                }`}
-              >
-                {agentHealth?.ok ? (
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold">
-                        本地 ASR Agent：已连接
-                      </span>
-                      <span
-                        className={`badge ${
-                          audioReady
-                            ? "bg-green-100 text-green-700"
-                            : "bg-yellow-100 text-yellow-700"
-                        }`}
-                      >
-                        {audioReady ? "模型就绪" : "模型未就绪"}
-                      </span>
-                    </div>
-                    {audioReady && (
-                      <p className="mt-1 text-xs text-slate-600">
-                        模型：{agentHealth.model.model_name}；标点模型：{agentHealth.model.punctuation_ready ? "就绪" : "未配置"}；说话人分离：{agentHealth.model.diarization_ready ? "就绪" : "未配置"}
-                      </p>
-                    )}
-                    {agentHealth.model.asr_ready === false && (
-                      <div className="mt-3 rounded-lg border border-yellow-300 bg-white p-3 text-xs text-slate-700">
-                        <p className="font-semibold text-yellow-800">模型文件缺失</p>
-                        <p className="mt-1">
-                          缺少：<code className="text-red-600">{agentHealth.model.missing.join("、")}</code>
-                        </p>
-                        <p className="mt-1">
-                          请将模型文件放入 <code>asr-agent/models/</code> 目录：
-                        </p>
-                        <ul className="mt-1 ml-4 list-disc text-slate-600">
-                          <li>Paraformer 模型：<code>models/paraformer-zh-small/model.onnx</code> + <code>tokens.txt</code></li>
-                          <li>标点模型：<code>models/punctuation-zh-en-int8/model.int8.onnx</code></li>
-                          <li>说话人分离：<code>models/diarization/segmentation/model.onnx</code> + <code>models/diarization/embedding/model.onnx</code></li>
-                        </ul>
-                        <p className="mt-1 text-slate-500">
-                          模型可从 <a href="https://github.com/k2-fsa/sherpa-onnx/releases" target="_blank" rel="noopener" className="text-brand-700 underline">sherpa-onnx Releases</a> 下载。文本导入不受影响，可继续使用。
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div>
-                    <p className="font-semibold">本地 ASR Agent：未连接</p>
-                    <p className="mt-1">
-                      转写服务暂不可用。你仍可导入 TXT、DOCX、SRT 或 VTT；本地完整版请双击“启动 ResearchBox”。
-                    </p>
-                  </div>
-                )}
-              </div>
-              <Field label="选择音频文件">
-                <input
-                  className="input"
-                  type="file"
-                  accept={fileAccept}
-                  disabled={isAsrRunning}
-                  onChange={(e) => void handleFile(e.target.files?.[0])}
-                />
-              </Field>
-              <label className="flex items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
-                <input
-                  type="checkbox"
-                  className="mt-1"
-                  checked={enableDiarization}
-                  disabled={isAsrRunning}
-                  onChange={(e) => setEnableDiarization(e.target.checked)}
-                />
-                <span>
-                  <span className="block font-medium text-slate-800">
-                    启用说话人分离
-                  </span>
-                  <span className="block">
-                    更适合多人访谈，但会显著变慢；单人/一问一答访谈建议先关闭，转写完成后再做精修。
-                  </span>
-                </span>
-              </label>
-            </>
-          )}
-
-          {importMode === "text" && (
-            <>
-              <Field label="逐字稿文本">
-                <textarea
-                  className="input min-h-56"
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                  placeholder="直接粘贴访谈文本；系统会按段落切分为带时间戳的逐字稿片段。"
-                />
-              </Field>
-              <Field label="或上传文本文件">
-                <input
-                  className="input"
-                  type="file"
-                  accept={fileAccept}
-                  onChange={(e) => void handleFile(e.target.files?.[0])}
-                />
-              </Field>
-              {fileName && (
-                <p className="text-xs text-slate-500">已读取文件：{fileName}</p>
-              )}
-            </>
-          )}
-
-          <div className="flex items-center justify-between">
-            <button
-              type="button"
-              className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
-              onClick={() => setStep(1)}
-            >
-              上一步
-            </button>
-            <button
-              type="submit"
-              className="btn-primary disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={!canSubmit}
-            >
-              {importMode === "audio"
-                ? isAsrRunning
-                  ? "转写中，请稍候"
-                  : "提交本地 ASR 转写"
-                : "生成逐字稿"}
-            </button>
-          </div>
-        </form>
-      )}
-
-      {/* 第 3 步：处理中 / 完成 */}
-      {step === 3 && importMode === "audio" && (
-        <div className="space-y-4">
-          {asrTask?.status === "已完成" && asrTask.result && createdInterviewId ? (
-            <div className="card space-y-5 p-6">
-              <div className="flex items-center gap-3">
-                <span className="flex h-10 w-10 items-center justify-center rounded-full bg-green-100 text-green-600">
-                  <svg viewBox="0 0 20 20" className="h-5 w-5" fill="currentColor">
-                    <path d="M7.5 13.5l-3-3 1.4-1.4 1.6 1.6 4.6-4.6L13.5 7.5z" />
-                  </svg>
-                </span>
-                <div>
-                  <h2 className="text-lg font-bold text-slate-950">转写完成</h2>
-                  <p className="text-sm text-slate-600">
-                    访谈已创建，可进入校正或重新转写。
-                  </p>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="rounded-xl bg-slate-50 p-4">
-                  <p className="text-sm text-slate-500">总段数</p>
-                  <p className="mt-1 text-2xl font-bold text-slate-950">
-                    {asrTask.result.segments.length}
-                  </p>
-                </div>
-                <div className="rounded-xl bg-slate-50 p-4">
-                  <p className="text-sm text-slate-500">总时长</p>
-                  <p className="mt-1 text-2xl font-bold text-slate-950">
-                    {formatDuration(asrTask.result.duration || 0)}
-                  </p>
-                </div>
-              </div>
-              <div>
-                <p className="label">转写文本预览（前 500 字）</p>
-                <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
-                  {previewText.slice(0, 500)}
-                  {previewText.length > 500 ? "…" : ""}
-                </pre>
-              </div>
-              <div className="flex flex-wrap gap-3">
-                <button
-                  type="button"
-                  className="btn-primary"
-                  onClick={() => navigate(`/transcript/${createdInterviewId}`)}
-                >
-                  进入校正
-                </button>
-                <button
-                  type="button"
-                  className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
-                  onClick={resetForRetranscribe}
-                >
-                  重新转写
-                </button>
-              </div>
-            </div>
-          ) : asrTask && (asrTask.status === "失败" || asrTask.status === "已取消") ? (
-            <div className="card space-y-4 p-6">
-              <div className="flex items-center gap-3">
-                <span className="flex h-10 w-10 items-center justify-center rounded-full bg-red-100 text-red-600">
-                  <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                    <path d="M6 6l12 12M18 6L6 18" />
-                  </svg>
-                </span>
-                <div>
-                  <h2 className="text-lg font-bold text-slate-950">转写未完成</h2>
-                  <p className="text-sm text-slate-600">{status}</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
-                onClick={resetForRetranscribe}
-              >
-                返回上一步
-              </button>
-            </div>
-          ) : (
-            <div className="card space-y-4 p-6">
-              <div className="flex items-center gap-3">
-                <span className="h-5 w-5 animate-spin rounded-full border-2 border-brand-500 border-t-transparent" />
-                <h2 className="text-lg font-bold text-slate-950">正在处理</h2>
-              </div>
-              <p className="text-sm text-slate-600">{status}</p>
-              {asrTask && (
-                <div className="h-2 rounded bg-slate-200">
-                  <div
-                    className="h-2 rounded bg-brand-600 transition-all"
-                    style={{ width: `${asrTask.progress}%` }}
-                  />
-                </div>
-              )}
-              {isAsrRunning && (
-                <button
-                  type="button"
-                  className="rounded border border-slate-300 px-3 py-1 text-xs text-slate-600 hover:bg-white"
-                  onClick={() => void cancelCurrentAsrTask()}
-                >
-                  取消当前任务
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {step === 3 && importMode === "text" && (
-        <div className="card space-y-5 p-8 text-center">
-          <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-green-100 text-green-600">
-            <svg viewBox="0 0 20 20" className="h-6 w-6" fill="currentColor">
-              <path d="M7.5 13.5l-3-3 1.4-1.4 1.6 1.6 4.6-4.6L13.5 7.5z" />
-            </svg>
-          </span>
-          <div>
-            <h2 className="text-xl font-bold text-slate-950">导入成功</h2>
-            <p className="mt-1 text-sm text-slate-600">
-              访谈“{title.trim()}”已创建，可进入校正工作台进行精修。
-            </p>
-          </div>
-          {createdInterviewId && (
-            <button
-              type="button"
-              className="btn-primary"
-              onClick={() => navigate(`/transcript/${createdInterviewId}`)}
-            >
-              进入校正
-            </button>
-          )}
-        </div>
-      )}
     </section>
   );
 }
@@ -2335,7 +1588,7 @@ function InsightsPage() {
     setAiStatus("一键洞察：正在生成本地规则分析...");
     try {
       await generateInsights();
-      const useAi = aiHealth?.configured;
+      const useAi = aiHealth?.configured || hasUserApiKey();
       if (useAi) {
         setAiStatus("一键洞察：AI 正在跨访谈深度分析...");
         try {
@@ -2416,7 +1669,7 @@ function InsightsPage() {
             本地规则分析
           </button>
           <button
-            disabled={!aiHealth?.configured || aiRunning}
+            disabled={!(aiHealth?.configured || hasUserApiKey()) || aiRunning}
             className="btn-ghost"
             onClick={() => void generateBailianInsights()}
           >
@@ -2540,22 +1793,22 @@ function InsightsPage() {
         <div className="card p-4">
           <p className="text-sm font-semibold text-slate-900">本地规则分析</p>
           <p className="mt-1 text-xs text-slate-500">
-            基于标签频次和覆盖率快速生成统计洞察，无需 AI 代理。适合快速概览和高频主题筛查。
+            基于标签频次和覆盖率快速生成统计洞察，无需 AI。适合快速概览和高频主题筛查。
           </p>
         </div>
         <div className="card p-4">
           <p className="text-sm font-semibold text-slate-900">AI 聚合分析</p>
           <p className="mt-1 text-xs text-slate-500">
-            语义级跨访谈理解，生成带证据链的深度洞察。需要 AI 代理在线，会将笔录文本发送至AI 服务（音频不上传）。
+            语义级跨访谈理解，生成带证据链的深度洞察。需要 AI 接口，会将笔录文本发送至AI 服务（音频不上传）。
           </p>
         </div>
       </div>
       <div
-        className={`rounded-xl border p-3 text-sm ${aiHealth?.configured ? "border-green-200 bg-green-50 text-green-800" : "border-slate-200 bg-white text-slate-600"}`}
+        className={`rounded-xl border p-3 text-sm ${aiHealth?.configured || hasUserApiKey() ? "border-green-200 bg-green-50 text-green-800" : "border-slate-200 bg-white text-slate-600"}`}
       >
-        {aiHealth?.configured
-          ? `AI代理已连接 · ${aiHealth.model}`
-          : "AI 服务暂不可用，请稍后重试；本地完整版可通过一键启动器恢复。"}
+        {aiHealth?.configured || hasUserApiKey()
+          ? `AI已连接 · ${getUserAiConfig()?.model || aiHealth?.model}`
+          : "请在设置页面配置 API Key"}
         {aiStatus && <span className="ml-2">{aiStatus}</span>}
       </div>
       <div className="grid gap-6 lg:grid-cols-[0.8fr_1.2fr]">
@@ -2810,7 +2063,7 @@ function ReportPage() {
 
   async function oneClickReport() {
     if (!project) return;
-    if (!aiHealth?.configured) {
+    if (!aiHealth?.configured && !hasUserApiKey()) {
       addToast("AI 服务暂不可用，请稍后重试", "error");
       return;
     }
@@ -2922,7 +2175,7 @@ function ReportPage() {
       addToast("请先上传至少1份笔录文件", "info");
       return;
     }
-    if (!aiHealth?.configured) {
+    if (!aiHealth?.configured && !hasUserApiKey()) {
       addToast("AI 服务未启动，请在终端运行 npm run ai 后重试", "error");
       return;
     }
@@ -3037,7 +2290,7 @@ function ReportPage() {
           </Link>
           <button
             className="btn-primary"
-            disabled={aiGenerating || !aiHealth?.configured}
+            disabled={aiGenerating || (!aiHealth?.configured && !hasUserApiKey())}
             onClick={() => void oneClickReport()}
           >
             {aiGenerating ? "AI 生成中..." : "一键生成报告"}
@@ -3134,7 +2387,7 @@ function ReportPage() {
             </div>
             <button
               className="btn-primary mt-3 w-full"
-              disabled={quickGenerating || !aiHealth?.configured}
+              disabled={quickGenerating || (!aiHealth?.configured && !hasUserApiKey())}
               onClick={() => void oneClickTranscriptReport()}
             >
               {quickGenerating ? "AI 分析笔录中..." : `从 ${uploadedTranscripts.length} 份笔录一键生成报告`}

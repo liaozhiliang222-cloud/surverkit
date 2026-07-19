@@ -3,6 +3,65 @@ import { useLiveQuery } from "dexie-react-hooks";
 import { db, now, uid } from "./db";
 import { can, exportProjectBundle, importProjectBundle } from "./p2Services";
 import type { MemberRole, ReportTemplate } from "./types";
+import {
+  getUserAiConfig,
+  setUserAiConfig,
+  clearUserAiConfig,
+  testAiConnection,
+  type UserAiConfig,
+} from "./aiClient";
+
+// ============================================================
+// AI 供应商预设
+// ============================================================
+const AI_PROVIDERS = [
+  {
+    id: "dashscope",
+    name: "阿里云百炼 (DashScope)",
+    models: [
+      { label: "DeepSeek V4 Flash（快速，默认）", value: "deepseek-v4-flash" },
+      { label: "DeepSeek V4 Pro（精准）", value: "deepseek-v4-pro" },
+      { label: "Qwen Plus", value: "qwen-plus" },
+      { label: "Qwen Turbo", value: "qwen-turbo" },
+    ],
+    baseUrl: "https://dashscope.aliyun.com/compatible-mode/v1",
+  },
+  {
+    id: "deepseek",
+    name: "DeepSeek 官方",
+    models: [
+      { label: "DeepSeek Chat", value: "deepseek-chat" },
+      { label: "DeepSeek Reasoner", value: "deepseek-reasoner" },
+    ],
+    baseUrl: "https://api.deepseek.com/v1",
+  },
+  {
+    id: "moonshot",
+    name: "Moonshot (Kimi)",
+    models: [
+      { label: "Moonshot 8K", value: "moonshot-v1-8k" },
+      { label: "Moonshot 32K", value: "moonshot-v1-32k" },
+      { label: "Moonshot 128K", value: "moonshot-v1-128k" },
+    ],
+    baseUrl: "https://api.moonshot.cn/v1",
+  },
+  {
+    id: "zhipu",
+    name: "智谱 AI",
+    models: [
+      { label: "GLM-4-Flash", value: "glm-4-flash" },
+      { label: "GLM-4", value: "glm-4" },
+      { label: "GLM-4-Plus", value: "glm-4-plus" },
+    ],
+    baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+  },
+  {
+    id: "custom",
+    name: "自定义 (OpenAI 兼容)",
+    models: [],
+    baseUrl: "",
+  },
+];
 
 export function SettingsCenter() {
   const workspace = useLiveQuery(
@@ -46,6 +105,74 @@ export function SettingsCenter() {
   );
   const canManage = can(currentRole, "manageMembers");
   const canWrite = can(currentRole, "write");
+
+  // ====== AI 接口配置状态 ======
+  const existingConfig = getUserAiConfig();
+  const [aiProvider, setAiProvider] = useState(existingConfig?.provider || "dashscope");
+  const [aiModel, setAiModel] = useState(existingConfig?.model || "deepseek-v4-flash");
+  const [aiBaseUrl, setAiBaseUrl] = useState(existingConfig?.baseUrl || AI_PROVIDERS[0].baseUrl);
+  const [aiApiKey, setAiApiKey] = useState(existingConfig?.apiKey || "");
+  const [aiTesting, setAiTesting] = useState(false);
+  const [aiTestResult, setAiTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [aiSaved, setAiSaved] = useState(false);
+
+  const currentProvider = AI_PROVIDERS.find((p) => p.id === aiProvider) || AI_PROVIDERS[0];
+
+  function handleProviderChange(providerId: string) {
+    const provider = AI_PROVIDERS.find((p) => p.id === providerId);
+    if (!provider) return;
+    setAiProvider(providerId);
+    setAiBaseUrl(provider.baseUrl);
+    if (provider.models.length > 0) {
+      setAiModel(provider.models[0].value);
+    }
+    setAiTestResult(null);
+    setAiSaved(false);
+  }
+
+  async function handleSaveAiConfig() {
+    if (!aiApiKey.trim()) {
+      setMessage("请输入 API Key");
+      return;
+    }
+    const config: UserAiConfig = {
+      apiKey: aiApiKey.trim(),
+      model: aiModel.trim(),
+      baseUrl: aiBaseUrl.trim(),
+      provider: aiProvider,
+    };
+    setUserAiConfig(config);
+    setAiSaved(true);
+    setMessage("AI 接口配置已保存");
+    setTimeout(() => setMessage(""), 3000);
+  }
+
+  async function handleTestConnection() {
+    if (!aiApiKey.trim()) {
+      setAiTestResult({ ok: false, message: "请先输入 API Key" });
+      return;
+    }
+    setAiTesting(true);
+    setAiTestResult(null);
+    const config: UserAiConfig = {
+      apiKey: aiApiKey.trim(),
+      model: aiModel.trim(),
+      baseUrl: aiBaseUrl.trim(),
+      provider: aiProvider,
+    };
+    const result = await testAiConnection(config);
+    setAiTestResult(result);
+    setAiTesting(false);
+  }
+
+  function handleClearAiConfig() {
+    clearUserAiConfig();
+    setAiApiKey("");
+    setAiTestResult(null);
+    setAiSaved(false);
+    setMessage("AI 接口配置已清空");
+    setTimeout(() => setMessage(""), 3000);
+  }
 
   async function addMember(event: FormEvent) {
     event.preventDefault();
@@ -95,7 +222,7 @@ export function SettingsCenter() {
     if (!file) return;
     try {
       const project = await importProjectBundle(file);
-      setMessage(`项目“${project.name}”已恢复。`);
+      setMessage(`项目"${project.name}"已恢复。`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "恢复失败");
     }
@@ -105,8 +232,8 @@ export function SettingsCenter() {
     <section className="mx-auto max-w-6xl space-y-6">
       <div className="flex flex-col justify-between gap-3 md:flex-row md:items-end">
         <div>
-        <p className="text-sm text-brand-700">P2 产品化设置</p>
-        <h1 className="text-3xl font-bold">工作区与交付能力</h1>
+        <p className="text-sm text-brand-700">系统设置</p>
+        <h1 className="text-3xl font-bold">AI 接口设置</h1>
         </div>
         <label className="w-56"><span className="label">当前身份</span><select className="input" value={currentRole} onChange={(event) => { const next = event.target.value as MemberRole; setCurrentRole(next); localStorage.setItem("researchbox-current-role", next); }}><option>所有者</option><option>管理员</option><option>研究员</option><option>访客</option></select></label>
         {message && (
@@ -115,6 +242,195 @@ export function SettingsCenter() {
           </p>
         )}
       </div>
+
+      {/* ====== AI 接口配置卡片 ====== */}
+      <div className="grid gap-5 lg:grid-cols-2">
+        <div className="card p-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="inline-block rounded bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">输入与配置</span>
+              <h2 className="mt-2 font-semibold">AI 大模型接口</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                选择 LLM 供应商并填入 API Key，所有 AI 功能（校正、编码、分析、报告）将通过此接口调用。
+              </p>
+            </div>
+            {existingConfig && (
+              <span className="badge bg-green-50 text-green-700">已配置</span>
+            )}
+          </div>
+
+          <div className="mt-4 space-y-3">
+            {/* 供应商 */}
+            <label className="block">
+              <span className="label">供应商</span>
+              <select
+                className="input"
+                value={aiProvider}
+                onChange={(e) => handleProviderChange(e.target.value)}
+              >
+                {AI_PROVIDERS.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </label>
+
+            {/* 模型档位 */}
+            {currentProvider.models.length > 0 && (
+              <label className="block">
+                <span className="label">模型档位</span>
+                <select
+                  className="input"
+                  value={aiModel}
+                  onChange={(e) => setAiModel(e.target.value)}
+                >
+                  {currentProvider.models.map((m) => (
+                    <option key={m.value} value={m.value}>{m.label}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            {/* 模型名称（可自定义） */}
+            <label className="block">
+              <span className="label">模型名称</span>
+              <input
+                className="input"
+                value={aiModel}
+                onChange={(e) => setAiModel(e.target.value)}
+                placeholder="deepseek-v4-flash"
+              />
+            </label>
+
+            {/* 接口地址 */}
+            <label className="block">
+              <span className="label">接口地址</span>
+              <input
+                className="input"
+                value={aiBaseUrl}
+                onChange={(e) => setAiBaseUrl(e.target.value)}
+                placeholder="https://dashscope.aliyun.com/compatible-mode/v1"
+              />
+            </label>
+
+            {/* API Key */}
+            <label className="block">
+              <span className="label">API Key</span>
+              <input
+                className="input"
+                type="password"
+                value={aiApiKey}
+                onChange={(e) => { setAiApiKey(e.target.value); setAiSaved(false); }}
+                placeholder="sk-..."
+              />
+            </label>
+          </div>
+
+          {/* 操作按钮 */}
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button
+              className="btn-primary"
+              onClick={() => void handleSaveAiConfig()}
+            >
+              保存设置
+            </button>
+            <button
+              className="btn-ghost"
+              disabled={aiTesting || !aiApiKey.trim()}
+              onClick={() => void handleTestConnection()}
+            >
+              {aiTesting ? "测试中..." : "测试连接"}
+            </button>
+            <button
+              className="text-sm text-slate-500 hover:text-slate-700"
+              onClick={handleClearAiConfig}
+            >
+              清空设置
+            </button>
+          </div>
+
+          {/* 测试结果 */}
+          {aiTestResult && (
+            <div
+              className={`mt-3 rounded-lg p-3 text-sm ${
+                aiTestResult.ok
+                  ? "bg-green-50 text-green-800"
+                  : "bg-red-50 text-red-800"
+              }`}
+            >
+              {aiTestResult.ok ? "✓ " : "✗ "}
+              {aiTestResult.message}
+            </div>
+          )}
+
+          {aiSaved && (
+            <p className="mt-3 text-xs text-slate-500">
+              配置已保存到本地浏览器，切换设备需重新输入。未配置 API Key 时，如服务端已配置默认 Key 则自动降级使用。
+            </p>
+          )}
+        </div>
+
+        {/* ====== 接口校验状态卡片 ====== */}
+        <div className="card p-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="inline-block rounded bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">接口校验</span>
+              <h2 className="mt-2 font-semibold">连接状态</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                查看当前 AI 接口的配置状态和可用性。
+              </p>
+            </div>
+            <span
+              className={`badge ${
+                existingConfig
+                  ? "bg-green-50 text-green-700"
+                  : "bg-amber-50 text-amber-700"
+              }`}
+            >
+              {existingConfig ? "已就绪" : "未配置"}
+            </span>
+          </div>
+
+          <div className="mt-4 space-y-2">
+            {existingConfig ? (
+              <div className="rounded-lg bg-blue-50 p-3">
+                <p className="text-sm font-medium text-blue-900">
+                  {AI_PROVIDERS.find((p) => p.id === existingConfig.provider)?.name || existingConfig.provider}
+                </p>
+                <p className="mt-1 text-xs text-blue-700">
+                  模型：{existingConfig.model}
+                </p>
+                <p className="mt-1 text-xs text-blue-700">
+                  接口：{existingConfig.baseUrl}
+                </p>
+                <p className="mt-2 text-xs text-blue-600">
+                  设置校验通过，可以在 AI 功能中调用
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-lg bg-amber-50 p-3">
+                <p className="text-sm font-medium text-amber-900">尚未配置 API Key</p>
+                <p className="mt-1 text-xs text-amber-700">
+                  请在左侧填入 API Key 并点击"保存设置"。如服务端已配置默认 Key，AI 功能仍可使用，但建议配置专属 Key 以获得更稳定的 service。
+                </p>
+              </div>
+            )}
+
+            {/* 供应商速览 */}
+            <div className="rounded-lg bg-slate-50 p-3">
+              <p className="text-xs font-medium text-slate-600">支持的供应商</p>
+              <ul className="mt-2 space-y-1 text-xs text-slate-500">
+                <li>· 阿里云百炼：deepseek-v4-flash / pro, qwen-plus</li>
+                <li>· DeepSeek 官方：deepseek-chat, deepseek-reasoner</li>
+                <li>· Moonshot (Kimi)：8K / 32K / 128K 上下文</li>
+                <li>· 智谱 AI：GLM-4-Flash, GLM-4, GLM-4-Plus</li>
+                <li>· 自定义：任何 OpenAI 兼容接口</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ====== 原有设置卡片 ====== */}
       <div className="grid gap-5 lg:grid-cols-2">
         <div className="card p-5">
           <div className="flex justify-between">
@@ -271,17 +587,6 @@ export function SettingsCenter() {
             onChange={(e) => void restore(e.target.files?.[0])}
           />
         </label>
-      </div>
-      <div className="card p-5">
-        <h2 className="font-semibold">转写服务策略</h2>
-        <p className="mt-2 text-sm text-slate-600">
-          本地 Agent 继续保留；云端 ASR
-          通过统一任务接口接入。当前产品默认从已有笔录开始，不会强制上传音频。
-        </p>
-        <div className="mt-3 rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
-          适配器约定：健康检查 → 提交任务 → 查询进度 → 标准化片段 →
-          进入待校正状态。
-        </div>
       </div>
     </section>
   );

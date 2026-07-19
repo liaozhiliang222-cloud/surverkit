@@ -1,7 +1,7 @@
 import { create } from "zustand";
-import { getAsrHealth, type AsrHealth } from "./asrClient";
 import {
   getAiHealth,
+  hasUserApiKey,
   generateReportFromTranscriptsWithAi,
   extractInsightsWithAi,
   planSlidesWithAi,
@@ -40,9 +40,7 @@ type QuickReportStatus = "idle" | "generating" | "done" | "error";
 type ProReportStage = "idle" | "extracting" | "planning" | "done" | "error";
 
 interface AppState {
-  asrHealth: AsrHealth | null;
   aiHealth: AiHealth | null;
-  asrLoading: boolean;
   aiLoading: boolean;
   toasts: ToastItem[];
   refreshHealth: () => Promise<void>;
@@ -102,27 +100,17 @@ interface AppState {
 let polling: ReturnType<typeof setInterval> | null = null;
 
 export const useStore = create<AppState>((set, get) => ({
-  asrHealth: null,
   aiHealth: null,
-  asrLoading: true,
   aiLoading: true,
   toasts: [],
 
   refreshHealth: async () => {
-    set({ asrLoading: true, aiLoading: true });
+    set({ aiLoading: true });
     try {
-      const [asr, ai] = await Promise.allSettled([
-        getAsrHealth(),
-        getAiHealth(),
-      ]);
-      set({
-        asrHealth: asr.status === "fulfilled" ? asr.value : null,
-        aiHealth: ai.status === "fulfilled" ? ai.value : null,
-        asrLoading: false,
-        aiLoading: false,
-      });
+      const ai = await getAiHealth();
+      set({ aiHealth: ai, aiLoading: false });
     } catch {
-      set({ asrHealth: null, aiHealth: null, asrLoading: false, aiLoading: false });
+      set({ aiHealth: null, aiLoading: false });
     }
   },
 
@@ -220,11 +208,12 @@ export const useStore = create<AppState>((set, get) => ({
 
   generateThumbnails: async () => {
     const { proSlides, aiHealth, addToast } = get();
+    const aiReady = aiHealth?.configured || hasUserApiKey();
     if (!proSlides || proSlides.length === 0) {
       addToast("没有可预览的页面", "error");
       return;
     }
-    if (!aiHealth?.configured) {
+    if (!aiReady) {
       addToast("AI 服务未启动", "error");
       return;
     }
@@ -245,11 +234,12 @@ export const useStore = create<AppState>((set, get) => ({
 
   runQACheck: async () => {
     const { proSlides, aiHealth, addToast } = get();
+    const aiReady = aiHealth?.configured || hasUserApiKey();
     if (!proSlides || proSlides.length === 0) {
       addToast("没有可质检的页面", "error");
       return;
     }
-    if (!aiHealth?.configured) {
+    if (!aiReady) {
       addToast("AI 服务未启动", "error");
       return;
     }
@@ -270,11 +260,12 @@ export const useStore = create<AppState>((set, get) => ({
 
   regenerateSingleSlide: async (slideId: string, feedback?: string) => {
     const { proSlides, proInsightPack, aiHealth, addToast } = get();
+    const aiReady = aiHealth?.configured || hasUserApiKey();
     if (!proSlides || !proInsightPack) {
       addToast("缺少洞察数据，无法重新生成", "error");
       return;
     }
-    if (!aiHealth?.configured) {
+    if (!aiReady) {
       addToast("AI 服务未启动", "error");
       return;
     }
@@ -327,7 +318,8 @@ export const useStore = create<AppState>((set, get) => ({
 
   loadNativeTemplates: async () => {
     const { aiHealth, addToast } = get();
-    if (!aiHealth?.configured) {
+    const aiReady = aiHealth?.configured || hasUserApiKey();
+    if (!aiReady) {
       addToast("AI 服务未启动", "error");
       return;
     }
@@ -346,11 +338,12 @@ export const useStore = create<AppState>((set, get) => ({
 
   renderWithNativeTemplate: async () => {
     const { proSlides, proStoryline, aiHealth, addToast } = get();
+    const aiReady = aiHealth?.configured || hasUserApiKey();
     if (!proSlides || proSlides.length === 0) {
       addToast("没有可导出的页面规划", "error");
       return;
     }
-    if (!aiHealth?.configured) {
+    if (!aiReady) {
       addToast("AI 服务未启动", "error");
       return;
     }
@@ -419,11 +412,12 @@ export const useStore = create<AppState>((set, get) => ({
 
   startProReport: async () => {
     const { quickTranscripts, quickContext, aiHealth, proOptions, addToast } = get();
+    const aiReady = aiHealth?.configured || hasUserApiKey();
     if (quickTranscripts.length === 0) {
       addToast("请先上传至少1份笔录文件", "info");
       return;
     }
-    if (!aiHealth?.configured) {
+    if (!aiReady) {
       addToast("AI 服务未启动，请在终端运行 npm run ai 后重试", "error");
       return;
     }
@@ -482,11 +476,12 @@ export const useStore = create<AppState>((set, get) => ({
 
   startQuickReport: async () => {
     const { quickTranscripts, quickContext, aiHealth, addToast } = get();
+    const aiReady = aiHealth?.configured || hasUserApiKey();
     if (quickTranscripts.length === 0) {
       addToast("请先上传至少1份笔录文件", "info");
       return;
     }
-    if (!aiHealth?.configured) {
+    if (!aiReady) {
       addToast("AI 服务未启动，请在终端运行 npm run ai 后重试", "error");
       return;
     }
