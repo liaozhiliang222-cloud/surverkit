@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { db, now, uid } from "./db";
 import { can, exportProjectBundle, importProjectBundle } from "./p2Services";
@@ -8,6 +8,7 @@ import {
   setUserAiConfig,
   clearUserAiConfig,
   testAiConnection,
+  getAiHealth,
   type UserAiConfig,
 } from "./aiClient";
 
@@ -116,6 +117,17 @@ export function SettingsCenter() {
   const [aiTestResult, setAiTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [aiSaved, setAiSaved] = useState(false);
 
+  // 服务端健康状态（检测服务端是否已配置默认 Key）
+  const [serverHealth, setServerHealth] = useState<{ configured: boolean; model?: string } | null>(null);
+
+  useEffect(() => {
+    getAiHealth()
+      .then((h) => setServerHealth({ configured: h.configured, model: h.model }))
+      .catch(() => setServerHealth(null));
+  }, []);
+
+  // AI 是否可用：用户配了 Key 或服务端配了 Key
+  const aiAvailable = !!existingConfig || !!serverHealth?.configured;
   const currentProvider = AI_PROVIDERS.find((p) => p.id === aiProvider) || AI_PROVIDERS[0];
 
   function handleProviderChange(providerId: string) {
@@ -381,17 +393,18 @@ export function SettingsCenter() {
             </div>
             <span
               className={`badge ${
-                existingConfig
+                aiAvailable
                   ? "bg-green-50 text-green-700"
                   : "bg-amber-50 text-amber-700"
               }`}
             >
-              {existingConfig ? "已就绪" : "未配置"}
+              {aiAvailable ? "已就绪" : "未配置"}
             </span>
           </div>
 
           <div className="mt-4 space-y-2">
             {existingConfig ? (
+              /* 用户自己配了 Key */
               <div className="rounded-lg bg-blue-50 p-3">
                 <p className="text-sm font-medium text-blue-900">
                   {AI_PROVIDERS.find((p) => p.id === existingConfig.provider)?.name || existingConfig.provider}
@@ -406,7 +419,21 @@ export function SettingsCenter() {
                   设置校验通过，可以在 AI 功能中调用
                 </p>
               </div>
+            ) : serverHealth?.configured ? (
+              /* 服务端配了默认 Key */
+              <div className="rounded-lg bg-green-50 p-3">
+                <p className="text-sm font-medium text-green-900">
+                  服务端已配置默认 API Key
+                </p>
+                <p className="mt-1 text-xs text-green-700">
+                  模型：{serverHealth.model || "deepseek-v4-flash"}
+                </p>
+                <p className="mt-2 text-xs text-green-600">
+                  无需额外配置即可直接使用 AI 功能。如需使用专属 Key，请在左侧填入。
+                </p>
+              </div>
             ) : (
+              /* 都没配 */
               <div className="rounded-lg bg-amber-50 p-3">
                 <p className="text-sm font-medium text-amber-900">尚未配置 API Key</p>
                 <p className="mt-1 text-xs text-amber-700">

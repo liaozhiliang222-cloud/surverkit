@@ -118,7 +118,7 @@ export interface AiHealth {
   provider: string;
   model: string;
 }
-export const getAiHealth = () => request<AiHealth>("/health");
+export const getAiHealth = () => request<AiHealth>("/api/health");
 
 /**
  * 测试 AI 连接（使用用户配置的 API Key）
