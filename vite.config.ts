@@ -26,7 +26,13 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
-        maximumFileSizeToCacheInBytes: 8 * 1024 * 1024
+        maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
+        // 新 SW 立即接管 + 清理旧缓存，避免用户卡在旧版本
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
+        // 缓存版本号变更，强制刷新所有资源
+        cacheId: 'researchbox-v2'
       }
     })
   ],
