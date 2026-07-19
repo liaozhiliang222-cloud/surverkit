@@ -1,24 +1,25 @@
 /**
- * ResearchBox AI Proxy - Cloudflare Worker 主入口
+ * ResearchBox - Cloudflare Worker 单服务入口（前端 + API 同源）
  *
- * 替代 Python ai-proxy/main.py，提供 13 个 AI 端点。
- * 所有 AI 调用走百炼/OpenAI 兼容 API，密钥通过 Worker Secrets 保护。
+ * 部署模式：
+ *   - /api/*  → Worker 处理（13 个 AI 端点）
+ *   - 其他路径 → 静态资源（前端 SPA，由 Cloudflare Assets 托管）
  *
- * 端点列表：
- * - GET  /health                              健康检查
- * - POST /correct                             笔录校正
- * - POST /analyze/interview                   单访谈分析
- * - POST /analyze/project                     项目跨访谈分析
- * - POST /code/batch                          批量编码
- * - POST /analyze/summary                     维度小结
- * - POST /correct/roles                       角色识别
- * - POST /tags/suggest                        标签建议
- * - POST /dimensions/suggest                  维度建议
- * - POST /report/transcript                   快速报告（从笔录直接生成）
- * - POST /report/extract-insights             结构化洞察提取（专业版第一步）
- * - POST /report/plan-slides                  报告规划（专业版第二步）
- * - POST /report/regenerate-slide             单页重生成
- * - POST /report/qa-check                     规则质检（纯逻辑，不调 AI）
+ * 端点列表（所有路径均以 /api 开头）：
+ * - GET  /api/health                          健康检查
+ * - POST /api/correct                         笔录校正
+ * - POST /api/analyze/interview               单访谈分析
+ * - POST /api/analyze/project                 项目跨访谈分析
+ * - POST /api/code/batch                      批量编码
+ * - POST /api/analyze/summary                 维度小结
+ * - POST /api/correct/roles                   角色识别
+ * - POST /api/tags/suggest                    标签建议
+ * - POST /api/dimensions/suggest              维度建议
+ * - POST /api/report/transcript               快速报告（从笔录直接生成）
+ * - POST /api/report/extract-insights         结构化洞察提取（专业版第一步）
+ * - POST /api/report/plan-slides              报告规划（专业版第二步）
+ * - POST /api/report/regenerate-slide         单页重生成
+ * - POST /api/report/qa-check                 规则质检（纯逻辑，不调 AI）
  */
 import { chat, chatWithRetry, HttpError, errorResponse, successResponse, type Env } from "./lib/chat";
 import {
@@ -33,7 +34,7 @@ import {
 import { checkSlides } from "./lib/qa";
 
 // ====================================================================
-// CORS 工具
+// CORS 工具（同源部署后主要用于本地开发调试）
 // ====================================================================
 
 function getAllowedOrigins(env: Env): string[] {
@@ -43,7 +44,8 @@ function getAllowedOrigins(env: Env): string[] {
 
 function corsHeaders(env: Env, requestOrigin: string | null): Record<string, string> {
   const allowed = getAllowedOrigins(env);
-  const origin = requestOrigin && allowed.includes(requestOrigin) ? requestOrigin : allowed[0] || "";
+  // 同源请求（生产环境）requestOrigin 为 null 或与 Worker 同域，直接放行
+  const origin = requestOrigin && allowed.includes(requestOrigin) ? requestOrigin : "*";
   return {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -113,21 +115,32 @@ export default {
     const method = request.method;
     const requestOrigin = request.headers.get("Origin");
 
+    // 非/API 路径：交给静态资源处理（由 wrangler.toml 的 [assets] 配置自动处理）
+    // 此分支理论上不会进入，因为 run_worker_first 只匹配 /api/*
+    // 但作为兜底，如果 ASSETS binding 可用则交给它
+    if (!path.startsWith("/api/")) {
+      if (env.ASSETS) {
+        return env.ASSETS.fetch(request);
+      }
+      return new Response("Not Found", { status: 404 });
+    }
+
     // CORS 预检
     if (method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders(env, requestOrigin) });
     }
 
-    // 路由分发
+    // API 路由分发
     try {
       // ====== 健康检查（无需鉴权）======
-      if (path === "/health" && method === "GET") {
+      if (path === "/api/health" && method === "GET") {
         return jsonResponse(env, requestOrigin, {
           ok: true,
           configured: !!env.DASHSCOPE_API_KEY,
           provider: "Cloudflare Worker",
           model: env.AI_MODEL || "deepseek-v4-flash",
           authEnabled: env.AUTH_ENABLED === "true",
+          mode: "unified",
         });
       }
 
@@ -135,7 +148,7 @@ export default {
       checkAuth(env, request);
 
       // ====== 笔录校正 ======
-      if (path === "/correct" && method === "POST") {
+      if (path === "/api/correct" && method === "POST") {
         const body = await parseJsonBody(request);
         const result = await chat(env, CORRECT_SYSTEM_PROMPT, JSON.stringify(body));
         return jsonResponse(env, requestOrigin, {
@@ -145,7 +158,7 @@ export default {
       }
 
       // ====== 单访谈分析 ======
-      if (path === "/analyze/interview" && method === "POST") {
+      if (path === "/api/analyze/interview" && method === "POST") {
         const body = await parseJsonBody(request);
         const result = await chat(env, ANALYZE_INTERVIEW_SYSTEM_PROMPT, JSON.stringify(body));
         return jsonResponse(env, requestOrigin, {
@@ -155,7 +168,7 @@ export default {
       }
 
       // ====== 项目跨访谈分析 ======
-      if (path === "/analyze/project" && method === "POST") {
+      if (path === "/api/analyze/project" && method === "POST") {
         const body = await parseJsonBody(request);
         const result = await chat(env, ANALYZE_PROJECT_SYSTEM_PROMPT, JSON.stringify(body), 0.15);
         return jsonResponse(env, requestOrigin, {
@@ -165,7 +178,7 @@ export default {
       }
 
       // ====== 批量编码 ======
-      if (path === "/code/batch" && method === "POST") {
+      if (path === "/api/code/batch" && method === "POST") {
         const body = await parseJsonBody(request);
         const result = await chat(env, CODE_BATCH_SYSTEM_PROMPT, JSON.stringify(body));
         return jsonResponse(env, requestOrigin, {
@@ -175,7 +188,7 @@ export default {
       }
 
       // ====== 维度小结 ======
-      if (path === "/analyze/summary" && method === "POST") {
+      if (path === "/api/analyze/summary" && method === "POST") {
         const body = await parseJsonBody(request);
         const result = await chat(env, ANALYZE_SUMMARY_SYSTEM_PROMPT, JSON.stringify(body));
         return jsonResponse(env, requestOrigin, {
@@ -185,7 +198,7 @@ export default {
       }
 
       // ====== 角色识别 ======
-      if (path === "/correct/roles" && method === "POST") {
+      if (path === "/api/correct/roles" && method === "POST") {
         const body = await parseJsonBody(request);
         const result = await chat(env, AUTO_ROLES_SYSTEM_PROMPT, JSON.stringify(body));
         return jsonResponse(env, requestOrigin, {
@@ -195,7 +208,7 @@ export default {
       }
 
       // ====== 标签建议 ======
-      if (path === "/tags/suggest" && method === "POST") {
+      if (path === "/api/tags/suggest" && method === "POST") {
         const body = await parseJsonBody(request);
         const result = await chat(env, SUGGEST_TAGS_SYSTEM_PROMPT, JSON.stringify(body));
         return jsonResponse(env, requestOrigin, {
@@ -205,7 +218,7 @@ export default {
       }
 
       // ====== 维度建议 ======
-      if (path === "/dimensions/suggest" && method === "POST") {
+      if (path === "/api/dimensions/suggest" && method === "POST") {
         const body = await parseJsonBody(request);
         const result = await chat(env, SUGGEST_DIMENSIONS_SYSTEM_PROMPT, JSON.stringify(body));
         return jsonResponse(env, requestOrigin, {
@@ -215,7 +228,7 @@ export default {
       }
 
       // ====== 快速报告（从笔录直接生成 Markdown 报告）======
-      if (path === "/report/transcript" && method === "POST") {
+      if (path === "/api/report/transcript" && method === "POST") {
         const body = await parseJsonBody(request);
         const result = await chatWithRetry(
           env, TRANSCRIPT_REPORT_SYSTEM_PROMPT, JSON.stringify(body), 0.3, 2,
@@ -228,7 +241,7 @@ export default {
       }
 
       // ====== 专业版第一步：结构化洞察提取 ======
-      if (path === "/report/extract-insights" && method === "POST") {
+      if (path === "/api/report/extract-insights" && method === "POST") {
         const body = await parseJsonBody(request);
         const transcripts = body.transcripts || [];
         const projectContext = body.projectContext || {};
@@ -244,7 +257,7 @@ export default {
       }
 
       // ====== 专业版第二步：报告规划 ======
-      if (path === "/report/plan-slides" && method === "POST") {
+      if (path === "/api/report/plan-slides" && method === "POST") {
         const body = await parseJsonBody(request);
         const insightPack = body.insightPack || {};
         const options = body.options || {};
@@ -260,7 +273,7 @@ export default {
       }
 
       // ====== 专业版：单页重生成 ======
-      if (path === "/report/regenerate-slide" && method === "POST") {
+      if (path === "/api/report/regenerate-slide" && method === "POST") {
         const body = await parseJsonBody(request);
         const insightPack = body.insightPack || {};
         const currentSlide = body.currentSlide || {};
@@ -314,7 +327,7 @@ ${JSON.stringify({
       }
 
       // ====== 规则质检（纯逻辑，不调 AI）======
-      if (path === "/report/qa-check" && method === "POST") {
+      if (path === "/api/report/qa-check" && method === "POST") {
         const body = await parseJsonBody(request);
         const slides = body.slides || [];
         const result = checkSlides(slides);

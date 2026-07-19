@@ -18,6 +18,7 @@ export interface Env {
   AI_PROXY_TOKEN?: string;        // 可选：鉴权 token
   AUTH_ENABLED?: string;          // 可选：是否启用鉴权
   ALLOWED_ORIGINS?: string;       // 可选：CORS 允许的域名
+  ASSETS?: Fetcher;               // 静态资源 binding（由 wrangler.toml [assets] 注入）
 }
 
 /**

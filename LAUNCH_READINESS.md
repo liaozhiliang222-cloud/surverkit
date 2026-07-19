@@ -1,6 +1,6 @@
 # ResearchBox 上线准备清单
 
-> 最近更新：2026-07-19（第五阶段 + Cloudflare Worker 改造完成）
+> 最近更新：2026-07-19（单 Worker 同源部署改造完成）
 
 ## 已具备
 
@@ -13,27 +13,30 @@
 - 17 种 slideType 渲染器，布局多样性、内容压缩、自动拆页、规则质检 13 条；
 - 桌面与移动端响应式导航；
 - 自动化测试、生产构建和 PWA；
-- **Cloudflare Worker AI 代理**（TypeScript，13 个端点，替代 Python FastAPI）；
-- **前端云环境自适应**（自动隐藏本地专用功能）；
+- **单 Worker 同源部署**（前端 SPA + AI 代理 API 合并到一个 Cloudflare Worker）；
 - 完整部署文档（DEPLOYMENT.md）。
 
-## 部署架构
+## 部署架构（单 Worker 同源）
 
 ```
-用户浏览器 → Cloudflare Pages（前端 PWA）→ Cloudflare Worker（AI 代理）→ 阿里云百炼 API
-                                                                              ↓
-                                                                    ASR 保持本地（仅自用）
+用户浏览器 → Cloudflare Worker（单一服务）
+                ├── /api/*      → AI 代理逻辑（13 个端点）
+                ├── 其他路径     → 前端 SPA 静态资源
+                └── 未匹配路径   → index.html（SPA fallback）
+                                     ↓
+                              阿里云百炼 API（AI 计算）
 ```
 
-- 前端：Cloudflare Pages（免费，全球 CDN）
-- AI 代理：Cloudflare Worker（免费额度 10 万次/天）
+- 前端 + AI 代理：同一个 Cloudflare Worker（免费额度 10 万次/天）
 - AI 计算：阿里云百炼（按量计费）
-- ASR：本机（127.0.0.1，不对外暴露）
+- ASR：本机（127.0.0.1，不对外暴露，仅自用）
+
+**优势**：单一域名、单一服务、单一部署命令、无 CORS 问题。
 
 ## 正式公网发布前必须完成
 
-1. **密钥管理**：`DASHSCOPE_API_KEY` 已通过 Worker Secret 管理，不再从本地 DOCX 读取 ✅
-2. **CORS 限制**：Worker 已配置 `ALLOWED_ORIGINS` 白名单 ✅
+1. **密钥管理**：`DASHSCOPE_API_KEY` 已通过 Worker Secret 管理 ✅
+2. **CORS 限制**：同源部署无需 CORS 配置 ✅
 3. **可选鉴权**：`AUTH_ENABLED` + `AI_PROXY_TOKEN` 简单鉴权（公网发布建议开启）
 4. 账号认证：如需多用户隔离，需接入 Cloudflare Access 或自建鉴权（当前为单用户模式）
 5. 云数据库与对象存储：项目、笔录、附件的加密存储和数据隔离（当前为 IndexedDB 本地存储）
@@ -59,26 +62,24 @@
 ### 一键部署命令
 
 ```bash
-# 1. 部署 AI 代理到 Worker
+# 1. 配置百炼 API Key（仅首次）
 cd worker
 npx wrangler login
 npx wrangler secret put DASHSCOPE_API_KEY
-npx wrangler deploy
-
-# 2. 部署前端到 Pages
 cd ..
-npm run build
-npx wrangler pages deploy dist --project-name researchbox
+
+# 2. 一键部署（构建前端 + 部署 Worker）
+npm run deploy
 
 # 3. 验证
-curl https://researchbox-ai-proxy.<your-subdomain>.workers.dev/health
+curl https://researchbox.<your-subdomain>.workers.dev/api/health
 ```
 
 ## 功能矩阵
 
 | 功能 | 本地开发 | 云端生产 |
 |------|---------|---------|
-| AI 校正/编码/分析 | ✅ Python 代理 | ✅ Worker |
+| AI 校正/编码/分析 | ✅ Python 代理 | ✅ Worker（/api/*） |
 | 快速报告 | ✅ | ✅ |
 | 专业版报告（洞察+规划） | ✅ | ✅ |
 | 规则质检 | ✅ | ✅ |

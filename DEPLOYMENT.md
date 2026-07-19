@@ -1,335 +1,194 @@
 # ResearchBox 部署指南
 
-本文档指导你将 ResearchBox 部署到生产环境。
+> 架构：单个 Cloudflare Worker 同时托管前端 SPA 和 AI 代理 API（同源部署）
 
-## 架构总览
+## 部署架构
 
 ```
-┌─────────────────┐      ┌──────────────────────┐      ┌─────────────────┐
-│  用户浏览器      │ ───> │  Cloudflare Pages    │ ───> │ Cloudflare      │
-│  (访问报告系统)  │      │  (前端 PWA, 静态)     │      │ Worker          │
-└─────────────────┘      └──────────────────────┘      │ (AI 代理, TS)    │
-                                                        └────────┬────────┘
-                                                                 │
-                                          ┌──────────────────────┴──────┐
-                                          │  阿里云百炼 / DeepSeek API   │
-                                          │  (真正的 AI 计算)            │
-                                          └─────────────────────────────┘
+用户浏览器 → Cloudflare Worker（单一服务）
+                ├── /api/*      → AI 代理逻辑（13 个端点）
+                ├── 其他路径     → 前端 SPA 静态资源
+                └── 未匹配路径   → index.html（SPA fallback）
+                                     ↓
+                              阿里云百炼 API（AI 计算）
 ```
 
-| 组件 | 部署位置 | 月成本 | 说明 |
-|------|---------|--------|------|
-| 前端 PWA | Cloudflare Pages | 免费 | 全球 CDN，静态托管 |
-| AI 代理 | Cloudflare Worker | 免费额度 10万次/天 | TypeScript，替代 Python FastAPI |
-| AI 计算 | 阿里云百炼 | 按量计费 | DeepSeek-V4 约 ¥0.001/千 tokens |
-| ASR 转写 | 你本机 | 0 | 按硬约束保留本地，不对外暴露 |
+**优势**：
+- 单一域名、单一服务、单一部署命令
+- 同源请求，无 CORS 问题
+- 免费额度：Worker 10 万次/天 + 静态资源全球 CDN
 
----
+## 前置条件
 
-## 第一部分：部署 AI 代理到 Cloudflare Worker
+1. Cloudflare 账号（免费即可）
+2. 阿里云百炼 API Key（[DashScope 控制台](https://dashscope.console.aliyun.com/)获取）
+3. Node.js 18+ 和 npm
 
-### 前置条件
+## 部署步骤
 
-- 安装 Node.js 18+
-- 注册 Cloudflare 账号（免费）
-- 准备好百炼/DeepSeek 的 API Key
-
-### 步骤 1：安装 Wrangler CLI
+### 1. 安装依赖
 
 ```bash
-cd d:\定性调研工具箱\research-box\worker
+cd research-box
 npm install
-npx wrangler login
+cd worker
+npm install
+cd ..
 ```
 
-执行 `wrangler login` 后会打开浏览器，授权 Cloudflare 账号。
-
-### 步骤 2：配置 API Key 密钥
-
-**重要：API Key 必须通过 Secret 设置，不要写在 wrangler.toml 里。**
-
-```bash
-cd d:\定性调研工具箱\research-box\worker
-npx wrangler secret put DASHSCOPE_API_KEY
-# 按提示输入你的百炼 API Key（sk-xxxxxxxxxxxxxxxxxxxxxxxx）
-```
-
-可选：如果需要启用简单鉴权（防止别人直接调用你的 Worker），设置 token：
-
-```bash
-npx wrangler secret put AI_PROXY_TOKEN
-# 按提示输入一个随机字符串作为 token
-```
-
-然后在 `wrangler.toml` 中把 `AUTH_ENABLED` 改为 `"true"`。
-前端调用时需在请求头加 `Authorization: Bearer <你的token>`。
-
-### 步骤 3：配置 CORS 允许的域名
-
-编辑 `worker/wrangler.toml`，把 `ALLOWED_ORIGINS` 改为你前端部署后的域名：
-
-```toml
-[vars]
-ALLOWED_ORIGINS = "https://researchbox.pages.dev,http://localhost:5173"
-```
-
-多个域名用逗号分隔。`http://localhost:5173` 是本地开发保留的。
-
-### 步骤 4：部署
-
-```bash
-cd d:\定性调研工具箱\research-box\worker
-npx wrangler deploy
-```
-
-部署成功后会输出 Worker 地址，类似：
-
-```
-Published researchbox-ai-proxy (1.23 sec)
-  https://researchbox-ai-proxy.<your-subdomain>.workers.dev
-```
-
-**记下这个地址**，下一步配置前端时要用。
-
-### 步骤 5：验证 Worker
-
-```bash
-curl https://researchbox-ai-proxy.<your-subdomain>.workers.dev/health
-```
-
-应返回：
-
-```json
-{"ok": true, "configured": true, "provider": "Cloudflare Worker", "model": "deepseek-v4-flash"}
-```
-
----
-
-## 第二部分：部署前端到 Cloudflare Pages
-
-### 步骤 1：构建前端
-
-```bash
-cd d:\定性调研工具箱\research-box
-# 创建 .env.production，填入你的 Worker 地址
-# （已提供模板，编辑 .env.production 替换为实际地址）
-npm run build
-```
-
-构建产物在 `dist/` 目录。
-
-### 步骤 2：通过 Wrangler 部署到 Pages
-
-```bash
-cd d:\定性调研工具箱\research-box
-npx wrangler pages deploy dist --project-name researchbox
-```
-
-首次部署会询问是否创建项目，选 Yes。
-
-部署成功后会输出地址：
-
-```
-✨ Deployment complete! Take a peek over at https://<hash>.researchbox.pages.dev
-```
-
-### 步骤 3：配置环境变量（推荐方式）
-
-更推荐通过 Cloudflare Dashboard 配置环境变量，这样不用每次改 .env.production 重新构建：
-
-1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com)
-2. 进入 Workers & Pages → 找到 `researchbox` 项目
-3. Settings → Environment Variables
-4. 添加 Production 环境变量：
-   - `VITE_AI_API_URL` = `https://researchbox-ai-proxy.<your-subdomain>.workers.dev`
-   - `VITE_ASR_API_URL` = `http://127.0.0.1:8765`（占位，云端不使用）
-5. 保存后重新触发一次部署（在 Deployments 页面点 Retry deployment）
-
-### 步骤 4：配置自定义域名（可选）
-
-1. Cloudflare Dashboard → Pages → researchbox → Custom domains
-2. 添加你的域名（如 `researchbox.yourdomain.com`）
-3. 按提示配置 DNS 记录
-4. 配置完成后，在 Worker 的 `ALLOWED_ORIGINS` 中加入这个域名
-
-### 步骤 5：验证前端
-
-打开 Pages 部署地址，应看到 ResearchBox 界面。
-
-测试 AI 功能：上传一份访谈笔录 → 生成快速报告 → 确认能正常返回结果。
-
----
-
-## 第三部分：ASR 转写功能（仅本地使用）
-
-ASR 按项目硬约束保留在本地，不对外暴露。云端部署的前端会自动隐藏 ASR 入口。
-
-### 本地启动 ASR Agent
-
-```bash
-cd d:\定性调研工具箱\research-box
-npm run asr:install    # 首次安装依赖
-npm run asr            # 启动 ASR Agent（127.0.0.1:8765）
-```
-
-ASR Agent 只监听 `127.0.0.1`，别人无法访问。
-
-### 本地使用完整功能
-
-如果你想使用 ASR + 缩略图预览 + 原生模板渲染等本地专用功能：
-
-1. 本地启动 Python ai-proxy：`cd ai-proxy && python main.py`
-2. 本地启动前端开发服务器：`npm run dev`
-3. 访问 `http://localhost:5173`
-
-本地模式下所有功能可用，包括云端隐藏的本地专用功能。
-
----
-
-## 环境变量清单
-
-### Worker 环境变量
-
-| 变量名 | 类型 | 必需 | 说明 |
-|--------|------|------|------|
-| `DASHSCOPE_API_KEY` | Secret | ✅ | 百炼 API Key |
-| `AI_PROXY_TOKEN` | Secret | 可选 | 鉴权 token（启用 AUTH_ENABLED 时必需）|
-| `AI_MODEL` | Var | 可选 | 模型名，默认 `deepseek-v4-flash` |
-| `AI_BASE_URL` | Var | 可选 | API base url，默认百炼 |
-| `AI_TIMEOUT_MS` | Var | 可选 | 超时毫秒，默认 120000 |
-| `ALLOWED_ORIGINS` | Var | 可选 | CORS 允许的域名，逗号分隔 |
-| `AUTH_ENABLED` | Var | 可选 | 是否启用鉴权，默认 `false` |
-
-### 前端环境变量
-
-| 变量名 | 必需 | 说明 |
-|--------|------|------|
-| `VITE_AI_API_URL` | ✅ | AI 代理地址（Worker URL）|
-| `VITE_ASR_API_URL` | 可选 | ASR 地址（本地专用）|
-
----
-
-## 常见问题排查
-
-### 问题1：前端调用 AI 报 CORS 错误
-
-**原因**：Worker 的 `ALLOWED_ORIGINS` 没有包含你的前端域名。
-
-**解决**：
-
-```bash
-# 编辑 worker/wrangler.toml
-# 在 ALLOWED_ORIGINS 中加入你的 Pages 域名
-ALLOWED_ORIGINS = "https://researchbox.pages.dev,https://researchbox.yourdomain.com,http://localhost:5173"
-
-# 重新部署 Worker
-cd worker && npx wrangler deploy
-```
-
-### 问题2：AI 调用返回 503 "未配置 AI API Key"
-
-**原因**：Worker 没有设置 `DASHSCOPE_API_KEY` secret。
-
-**解决**：
+### 2. 登录 Cloudflare
 
 ```bash
 cd worker
+npx wrangler login
+```
+
+浏览器会打开授权页面，授权后终端显示成功。
+
+### 3. 配置百炼 API Key（Secret）
+
+```bash
 npx wrangler secret put DASHSCOPE_API_KEY
-# 输入你的百炼 API Key
+# 提示输入值时，粘贴你的百炼 API Key（sk- 开头）
 ```
 
-### 问题3：AI 调用超时
+Secret 加密存储在 Cloudflare，不会出现在代码或配置文件中。
 
-**原因**：百炼 API 响应慢或 Worker 超时设置过短。
+### 4. 一键部署
 
-**解决**：
+**回到项目根目录执行**：
 
 ```bash
-# 编辑 worker/wrangler.toml，增加超时
-AI_TIMEOUT_MS = "180000"  # 3 分钟
-# 重新部署
-npx wrangler deploy
+cd ..  # 回到 research-box 根目录
+npm run deploy
 ```
 
-注意：Cloudflare Worker 免费版有 CPU 时间限制（10ms/请求），但**等待外部 API 响应的时间不计入 CPU 时间**，所以 AI 调用不受此限制。
+这条命令会：
+1. `npm run build` - 构建前端到 `dist/` 目录
+2. `cd worker && npx wrangler deploy` - 部署 Worker（同时上传前端静态资源 + API 代码）
 
-### 问题4：部署后前端显示"云端模式"
+部署成功后输出类似：
 
-这是正常行为。云端模式下会隐藏缩略图预览和原生模板渲染（这两个功能需要本地二进制）。PPT 导出使用内置 PptxGenJS 模板，完全可编辑。
+```
+Published researchbox
+  https://researchbox.<你的子域>.workers.dev
+```
 
-### 问题5：本地开发时连不上 Worker
-
-本地开发默认连 `http://127.0.0.1:8766`（Python 代理）。如果要连 Worker 测试：
+### 5. 验证部署
 
 ```bash
-# 创建 .env.local
-echo "VITE_AI_API_URL=https://researchbox-ai-proxy.your-subdomain.workers.dev" > .env.local
+# 健康检查
+curl https://researchbox.<你的子域>.workers.dev/api/health
+
+# 应返回：
+# {"ok":true,"configured":true,"provider":"Cloudflare Worker","mode":"unified",...}
+
+# 访问前端
+# 浏览器打开 https://researchbox.<你的子域>.workers.dev
+```
+
+## 本地开发
+
+### 前端 + Python 代理（完整功能）
+
+```bash
+# 1. 启动 Python AI 代理（需要先安装依赖）
+npm run ai
+
+# 2. 另开终端，设置环境变量并启动前端
+# 创建 .env.local 文件：
+# VITE_AI_API_URL=http://127.0.0.1:8766
 npm run dev
 ```
 
----
-
-## 成本估算
-
-| 项 | 免费额度 | 超出后 | 预估月费 |
-|----|---------|--------|---------|
-| Cloudflare Pages | 500 次构建/月，无限请求 | $0 | ¥0 |
-| Cloudflare Worker | 10 万次请求/天 | $5/月起 | ¥0（小流量）|
-| 百炼 AI（DeepSeek-V4） | 按量 | - | 视用量，约 ¥10-50/月 |
-
-**典型场景**：每天生成 10 份报告，每份报告约 2 万 tokens，月费约 ¥10-20。
-
----
-
-## 更新部署
-
-### 更新 Worker
+### 前端 + Worker 本地预览（模拟云端环境）
 
 ```bash
-cd d:\定性调研工具箱\research-box\worker
-# 修改代码后
-npx wrangler deploy
-```
-
-### 更新前端
-
-```bash
-cd d:\定性调研工具箱\research-box
+# 1. 构建前端
 npm run build
-npx wrangler pages deploy dist --project-name researchbox
+
+# 2. 启动 Worker 本地开发服务器
+npm run deploy:dev
+# 访问 http://localhost:8788
 ```
 
-### 查看日志
+## 可选配置
+
+### 开启鉴权（公网发布建议）
+
+编辑 `worker/wrangler.toml`：
+
+```toml
+AUTH_ENABLED = "true"
+```
+
+设置访问 Token：
 
 ```bash
-# Worker 实时日志
-cd worker && npx wrangler tail
-
-# Pages 部署历史
-# 在 Cloudflare Dashboard → Pages → researchbox → Deployments 查看
+cd worker
+npx wrangler secret put AI_PROXY_TOKEN
+# 输入自定义 token，如 rb-xxx-2026
 ```
 
----
+前端在 Cloudflare Pages 环境变量里设置 `VITE_AI_PROXY_TOKEN` 为同一个值（如果是分离部署）。
+同源部署模式下，前端代码会自动从 localStorage 读取 token（设置页面里配置）。
 
-## 安全注意事项
+### 自定义域名
 
-1. **API Key 只用 Secret**：永远不要把 `DASHSCOPE_API_KEY` 写在 `wrangler.toml` 或代码里
-2. **启用鉴权**：如果担心别人直接调你的 Worker，设置 `AUTH_ENABLED=true` 和 `AI_PROXY_TOKEN`
-3. **CORS 限制**：`ALLOWED_ORIGINS` 只列你自己的域名
-4. **ASR 不暴露**：ASR Agent 绑定 `127.0.0.1`，不要改成 `0.0.0.0`
-5. **定期检查用量**：在 Cloudflare Dashboard 监控 Worker 和百炼的用量
+在 Cloudflare Dashboard → Workers & Pages → 你的 Worker → Settings → Triggers → Custom Domains 添加域名。
 
----
+### 更新 CORS 白名单
 
-## 本地开发 vs 生产环境对比
+同源部署模式下通常不需要配置 CORS。仅当需要从其他域名调试时，编辑 `worker/wrangler.toml`：
 
-| 功能 | 本地开发 (localhost) | 生产环境 (Cloudflare) |
-|------|---------------------|---------------------|
-| AI 校正/编码/分析 | ✅ Python 代理 | ✅ Worker |
-| 快速报告 | ✅ Python 代理 | ✅ Worker |
-| 专业版报告（洞察+规划） | ✅ Python 代理 | ✅ Worker |
-| 规则质检 | ✅ Python 代理 | ✅ Worker |
-| PPT 导出（PptxGenJS） | ✅ 前端生成 | ✅ 前端生成 |
-| 缩略图预览 | ✅ 需 LibreOffice | ❌ 隐藏 |
-| 原生模板渲染 | ✅ 需 Node.js | ❌ 隐藏 |
-| ASR 转写 | ✅ 本地模型 | ❌ 隐藏 |
+```toml
+ALLOWED_ORIGINS = "http://localhost:5173,http://localhost:8788,https://your-debug-domain.com"
+```
+
+重新 `npm run deploy:worker`。
+
+## 部署命令速查
+
+| 命令 | 作用 |
+|------|------|
+| `npm run deploy` | 一键部署（构建前端 + 部署 Worker） |
+| `npm run deploy:build` | 仅构建前端 |
+| `npm run deploy:worker` | 仅部署 Worker（需先 build） |
+| `npm run deploy:dev` | Worker 本地预览（模拟云端） |
+
+## 文件结构
+
+```
+research-box/
+├── src/                    # 前端源码
+├── dist/                   # 前端构建产物（部署时上传到 Worker）
+├── worker/
+│   ├── src/
+│   │   ├── index.ts        # Worker 主入口（API 路由 + 静态资源 fallback）
+│   │   └── lib/
+│   │       ├── chat.ts     # AI 调用封装
+│   │       ├── prompts.ts  # AI 提示词
+│   │       └── qa.ts       # 规则质检
+│   ├── wrangler.toml       # Worker 配置（含 [assets] 静态资源配置）
+│   └── package.json
+├── package.json            # 根 package.json（含 deploy 脚本）
+└── DEPLOYMENT.md           # 本文档
+```
+
+## 故障排查
+
+### 部署报错：`dist/ directory not found`
+先执行 `npm run build`，再执行 `npm run deploy:worker`。
+
+### 前端能打开但 API 返回 404
+检查路径是否以 `/api/` 开头（如 `/api/health` 而非 `/health`）。
+
+### API 返回 503：未配置 API Key
+执行 `npx wrangler secret put DASHSCOPE_API_KEY` 设置百炼 API Key。
+
+### CORS 错误
+同源部署模式下不应出现 CORS 错误。如果出现，检查浏览器地址栏的域名是否与 Worker 域名一致。
+
+## ASR 本地部署（可选，仅自用）
+
+ASR 语音转写服务需要本地运行（不部署到云端），参见本地 `ASR_AGENT_SETUP.md`（未入库）。

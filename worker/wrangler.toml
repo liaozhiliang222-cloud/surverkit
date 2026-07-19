@@ -1,28 +1,36 @@
-name = "researchbox-ai-proxy"
+name = "researchbox"
 main = "src/index.ts"
 compatibility_date = "2024-06-20"
 compatibility_flags = ["nodejs_compat"]
 
-# 部署后访问地址：https://researchbox-ai-proxy.<your-subdomain>.workers.dev
-# 前端 VITE_AI_API_URL 指向这个地址
+# ============================================================
+# 静态资源（前端 SPA）+ API 同源部署
+# ============================================================
+# 部署流程：
+#   1. npm run build（构建前端到 ../dist）
+#   2. npx wrangler deploy（同时上传前端静态资源和 Worker 代码）
+#
+# 路由规则（run_worker_first = true）：
+#   所有请求先经过 Worker，Worker 内部判断：
+#   - /api/*  → 处理 API 逻辑
+#   - 其他路径 → env.ASSETS.fetch(request) 交给静态资源
+#   - 未匹配静态资源 → 返回 index.html（SPA fallback）
+# ============================================================
 
-# 环境变量（通过 wrangler secret 设置，不写在这里）：
-# wrangler secret put DASHSCOPE_API_KEY
-# wrangler secret put AI_PROXY_TOKEN    # 可选：简单鉴权 token
+[assets]
+directory = "../dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = true
 
-# 非敏感配置可以放 vars（可选）：
+# ============================================================
+# 环境变量（非敏感，敏感的用 wrangler secret put）
+# ============================================================
 [vars]
 AI_MODEL = "deepseek-v4-flash"
-AI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+AI_BASE_URL = "https://dashscope.aliyun.com/compatible-mode/v1"
 AI_TIMEOUT_MS = "120000"
-# 前端部署后的域名，用于 CORS（多个用逗号分隔）
-ALLOWED_ORIGINS = "https://researchbox.pages.dev,http://localhost:5173"
-
-# 如需启用鉴权，设为 true 并配置 AI_PROXY_TOKEN
+# 同源部署后 CORS 白名单可简化（前端和 API 同域）
+# 保留 localhost 用于本地开发调试
+ALLOWED_ORIGINS = "http://localhost:5173,http://localhost:8788"
 AUTH_ENABLED = "false"
-
-# 可选：使用 D1 数据库替代本地 SQLite（鉴权功能需要）
-# [[d1_databases]]
-# binding = "DB"
-# database_name = "researchbox"
-# database_id = "your-d1-database-id"

@@ -11,17 +11,20 @@ import type {
 } from "./types";
 
 // 对外部署时由环境变量指向托管代理，浏览器永远不接触AI API Key。
-const BASE_URL = (import.meta.env.VITE_AI_API_URL || "http://127.0.0.1:8766").replace(/\/$/, "");
+// 同源部署模式（Worker + Assets）：VITE_AI_API_URL 留空，前端走相对路径 /api
+// 本地开发模式：指向本机 Python 代理 http://127.0.0.1:8766
+const BASE_URL = ((import.meta.env.VITE_AI_API_URL || "/api") as string).replace(/\/$/, "");
 
 /**
  * 是否为云环境（AI 代理跑在 Cloudflare Worker 上）
  *
- * 判断依据：VITE_AI_API_URL 不是 127.0.0.1/localhost 且不是空值
- * 云环境下：缩略图预览、原生模板渲染等本地专用功能不可用
+ * 同源部署模式：VITE_AI_API_URL 留空（走 /api 相对路径）→ 视为云环境
+ * 本地开发模式：VITE_AI_API_URL 指向 127.0.0.1/localhost → 视为本地环境
+ * 显式云端：VITE_AI_API_URL 指向非 localhost 的完整 URL → 视为云环境
  */
 export function isCloudEnvironment(): boolean {
-  if (!import.meta.env.VITE_AI_API_URL) return false;
-  const url = import.meta.env.VITE_AI_API_URL as string;
+  const url = import.meta.env.VITE_AI_API_URL as string | undefined;
+  if (!url || url === "/api") return true;  // 同源相对路径 = 云端统一部署
   return !url.includes("127.0.0.1") && !url.includes("localhost");
 }
 

@@ -14,7 +14,11 @@
     "ai": ".\\ai-proxy\\.venv\\Scripts\\python.exe ai-proxy/main.py",
     "asr:install": ".\\ai-proxy\\.venv\\Scripts\\python.exe -m pip install -r asr-agent/requirements.txt",
     "gen-templates": "npx tsx scripts/generate-native-templates.ts",
-    "open": "powershell -ExecutionPolicy Bypass -File scripts/start-researchbox.ps1"
+    "open": "powershell -ExecutionPolicy Bypass -File scripts/start-researchbox.ps1",
+    "deploy": "npm run build && cd worker && npx wrangler deploy",
+    "deploy:build": "npm run build",
+    "deploy:worker": "cd worker && npx wrangler deploy",
+    "deploy:dev": "cd worker && npx wrangler dev"
   },
   "dependencies": {
     "dexie": "^4.0.10",
