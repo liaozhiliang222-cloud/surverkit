@@ -104,11 +104,15 @@ export async function chat(
     const body: any = await response.json();
     const content = body?.choices?.[0]?.message?.content || "";
 
+    if (!content || content.trim().length === 0) {
+      throw new HttpError(502, `模型返回空内容。完整响应: ${JSON.stringify(body).slice(0, 500)}`);
+    }
+
     try {
       const data = extractJson(content);
       return { data, usage: body.usage || {} };
     } catch (e) {
-      throw new HttpError(502, `模型输出无法解析为 JSON：${(e as Error).message}`);
+      throw new HttpError(502, `模型输出无法解析为 JSON：${(e as Error).message}。原始内容前300字符: ${content.slice(0, 300)}`);
     }
   } catch (e) {
     if (e instanceof HttpError) throw e;

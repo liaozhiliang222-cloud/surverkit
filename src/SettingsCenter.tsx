@@ -24,7 +24,7 @@ const AI_PROVIDERS = [
       { label: "Qwen Plus", value: "qwen-plus" },
       { label: "Qwen Turbo", value: "qwen-turbo" },
     ],
-    baseUrl: "https://dashscope.aliyun.com/compatible-mode/v1",
+    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
   },
   {
     id: "deepseek",
@@ -308,7 +308,7 @@ export function SettingsCenter() {
                 className="input"
                 value={aiBaseUrl}
                 onChange={(e) => setAiBaseUrl(e.target.value)}
-                placeholder="https://dashscope.aliyun.com/compatible-mode/v1"
+                placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
               />
             </label>
 

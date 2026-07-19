@@ -28,7 +28,7 @@ run_worker_first = true
 # ============================================================
 [vars]
 AI_MODEL = "deepseek-v4-flash"
-AI_BASE_URL = "https://dashscope.aliyun.com/compatible-mode/v1"
+AI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 AI_TIMEOUT_MS = "120000"
 # 同源部署后 CORS 白名单可简化（前端和 API 同域）
 # 保留 localhost 用于本地开发调试
