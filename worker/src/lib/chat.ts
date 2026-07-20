@@ -12,13 +12,41 @@ export interface ChatResult {
 
 export interface Env {
   DASHSCOPE_API_KEY: string;      // 必需：百炼 API Key（通过 wrangler secret 设置）
-  AI_MODEL?: string;              // 可选：模型名，默认 deepseek-v4-flash
+  AI_MODEL?: string;              // 可选：首选模型名（配额耗尽时自动降级）
+  AI_FALLBACK_MODELS?: string;    // 可选：备用模型列表（逗号分隔）
   AI_BASE_URL?: string;           // 可选：API base url
   AI_TIMEOUT_MS?: string;         // 可选：超时毫秒
   AI_PROXY_TOKEN?: string;        // 可选：鉴权 token
   AUTH_ENABLED?: string;          // 可选：是否启用鉴权
   ALLOWED_ORIGINS?: string;       // 可选：CORS 允许的域名
   ASSETS?: Fetcher;               // 静态资源 binding（由 wrangler.toml [assets] 注入）
+}
+
+/**
+ * 百炼免费模型列表（按优先级排序）
+ *
+ * 每个模型有独立的免费额度，配额耗尽时自动降级到下一个。
+ * 参考：https://www.banzhuti.com/2026-ai-large-model-api-free-10-million-tokens.html
+ */
+const DEFAULT_FREE_MODELS = [
+  "qwen-turbo",          // 永久每月 100 万 token 免费
+  "qwen-plus",           // 100 万 token，3 个月有效
+  "deepseek-v4-flash",   // 100 万 token，3 个月有效
+  "qwen3.7-plus",        // 100 万 token，3 个月有效
+  "qwen-max",            // 100 万 token，3 个月有效
+];
+
+/**
+ * 判断错误是否为"免费额度耗尽"（可降级到下一个模型）
+ *
+ * 百炼返回 403 + AllocationQuotaFreeTierOnly 时表示该模型免费额度用完。
+ * 同时兼容 "Free quota exhausted" 文本（旧版错误格式）。
+ */
+function isQuotaExhausted(status: number, detail: string): boolean {
+  if (status === 403 && detail.includes("AllocationQuotaFreeTierOnly")) return true;
+  if (status === 403 && detail.includes("Free quota exhausted")) return true;
+  if (status === 429 && detail.includes("quota")) return true;
+  return false;
 }
 
 /**
@@ -50,6 +78,10 @@ export function extractJson(content: string): any {
  * API Key 优先级：
  * 1. 请求头 X-User-API-Key（用户在前端设置页面手动输入）
  * 2. Worker Secret DASHSCOPE_API_KEY（部署时配置的默认 Key）
+ *
+ * 模型降级策略：
+ * 当首选模型返回 403（免费额度耗尽）时，自动切换到下一个备用模型。
+ * 备用模型列表由 AI_FALLBACK_MODELS 环境变量指定，或使用内置默认列表。
  */
 export async function chat(
   env: Env,
@@ -64,65 +96,105 @@ export async function chat(
   }
 
   const baseUrl = (env.AI_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/$/, "");
-  const model = env.AI_MODEL || "deepseek-v4-flash";
   const timeoutMs = parseInt(env.AI_TIMEOUT_MS || "120000", 10);
 
-  const payload = JSON.stringify({
-    model,
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: user },
-    ],
-    temperature,
-    response_format: { type: "json_object" },
-  });
+  // 构建模型列表：首选模型 + 环境变量备用模型 + 内置默认列表（去重）
+  const preferredModel = env.AI_MODEL || "qwen-turbo";
+  const envFallbacks = env.AI_FALLBACK_MODELS
+    ? env.AI_FALLBACK_MODELS.split(",").map(s => s.trim()).filter(Boolean)
+    : [];
+  const modelList: string[] = [];
+  for (const m of [preferredModel, ...envFallbacks, ...DEFAULT_FREE_MODELS]) {
+    if (!modelList.includes(m)) modelList.push(m);
+  }
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  let lastError: Error | null = null;
+  const triedModels: string[] = [];
 
-  try {
-    const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: payload,
-      signal: controller.signal,
+  for (const model of modelList) {
+    triedModels.push(model);
+    console.log(`[AI] 尝试模型: ${model}`);
+
+    const payload = JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+      temperature,
+      response_format: { type: "json_object" },
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      let detail = errorText;
-      try {
-        const errorJson = JSON.parse(errorText);
-        detail = errorJson.error?.message || errorJson.detail || errorText;
-      } catch {}
-      throw new HttpError(response.status, `AI 调用失败：${detail.slice(0, 500)}`);
-    }
-
-    const body: any = await response.json();
-    const content = body?.choices?.[0]?.message?.content || "";
-
-    if (!content || content.trim().length === 0) {
-      throw new HttpError(502, `模型返回空内容。完整响应: ${JSON.stringify(body).slice(0, 500)}`);
-    }
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const data = extractJson(content);
-      return { data, usage: body.usage || {} };
+      const response = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: payload,
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        let detail = errorText;
+        try {
+          const errorJson = JSON.parse(errorText);
+          detail = errorJson.error?.message || errorJson.detail || errorText;
+        } catch {}
+
+        // 免费额度耗尽 → 降级到下一个模型
+        if (isQuotaExhausted(response.status, detail)) {
+          console.log(`[AI] 模型 ${model} 免费额度耗尽，降级到下一个模型`);
+          lastError = new HttpError(response.status, `AI 调用失败：${detail.slice(0, 500)}`);
+          continue; // 尝试下一个模型
+        }
+
+        // 其他错误直接抛出（不降级）
+        throw new HttpError(response.status, `AI 调用失败：${detail.slice(0, 500)}`);
+      }
+
+      const body: any = await response.json();
+      const content = body?.choices?.[0]?.message?.content || "";
+
+      if (!content || content.trim().length === 0) {
+        throw new HttpError(502, `模型返回空内容。完整响应: ${JSON.stringify(body).slice(0, 500)}`);
+      }
+
+      try {
+        const data = extractJson(content);
+        console.log(`[AI] 模型 ${model} 调用成功`);
+        return { data, usage: body.usage || {} };
+      } catch (e) {
+        throw new HttpError(502, `模型输出无法解析为 JSON：${(e as Error).message}。原始内容前300字符: ${content.slice(0, 300)}`);
+      }
     } catch (e) {
-      throw new HttpError(502, `模型输出无法解析为 JSON：${(e as Error).message}。原始内容前300字符: ${content.slice(0, 300)}`);
+      if (e instanceof HttpError) {
+        // 如果是额度耗尽错误，继续降级（上面已经 continue 了，这里防御性处理）
+        if (isQuotaExhausted(e.status, e.message)) {
+          lastError = e;
+          continue;
+        }
+        throw e;
+      }
+      if (e instanceof Error && e.name === "AbortError") {
+        // 超时也降级到下一个模型
+        console.log(`[AI] 模型 ${model} 调用超时，降级到下一个模型`);
+        lastError = new HttpError(504, `AI 调用超时（${timeoutMs}ms）`);
+        continue;
+      }
+      throw new HttpError(502, `无法连接 AI 服务：${(e as Error).message}`);
+    } finally {
+      clearTimeout(timeoutId);
     }
-  } catch (e) {
-    if (e instanceof HttpError) throw e;
-    if (e instanceof Error && e.name === "AbortError") {
-      throw new HttpError(504, `AI 调用超时（${timeoutMs}ms）`);
-    }
-    throw new HttpError(502, `无法连接 AI 服务：${(e as Error).message}`);
-  } finally {
-    clearTimeout(timeoutId);
   }
+
+  // 所有模型都失败了
+  throw new HttpError(503, `所有 AI 模型免费额度已耗尽。已尝试: ${triedModels.join(" → ")}。请在阿里云百炼控制台充值或关闭"免费额度用完即停"模式。`);
 }
 
 /**
@@ -164,7 +236,11 @@ export async function chatWithRetry(
       lastError = e as Error;
 
       // 4xx 错误（客户端错误，非 429）不重试
+      // 503（所有模型额度耗尽）不重试，因为重试也是一样的结果
       if (e instanceof HttpError && e.status >= 400 && e.status < 500 && e.status !== 429) {
+        throw e;
+      }
+      if (e instanceof HttpError && e.status === 503) {
         throw e;
       }
 
