@@ -120,7 +120,20 @@ export default {
     // 但作为兜底，如果 ASSETS binding 可用则交给它
     if (!path.startsWith("/api/")) {
       if (env.ASSETS) {
-        return env.ASSETS.fetch(request);
+        const assetResponse = await env.ASSETS.fetch(request);
+        // 对 HTML 文件设置 no-cache，确保用户总能拿到最新版本
+        // 避免 CDN 缓存旧 index.html 导致前端版本卡死
+        if (path === "/" || path.endsWith(".html")) {
+          const headers = new Headers(assetResponse.headers);
+          headers.set("Cache-Control", "no-cache, no-store, must-revalidate");
+          headers.set("CDN-Cache-Control", "no-cache, no-store, must-revalidate");
+          return new Response(assetResponse.body, {
+            status: assetResponse.status,
+            statusText: assetResponse.statusText,
+            headers,
+          });
+        }
+        return assetResponse;
       }
       return new Response("Not Found", { status: 404 });
     }
