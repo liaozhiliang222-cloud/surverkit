@@ -229,7 +229,7 @@ export async function generateReportFromTranscriptsWithAi(
   return request<{
     data: { title: string; markdown: string };
     model: string;
-  }>("/report/generate-from-transcripts", {
+  }>("/report/transcript", {
     method: "POST",
     body: JSON.stringify({
       project: context || {},
