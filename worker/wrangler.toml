@@ -36,7 +36,7 @@ run_worker_first = true
 # 环境变量（非敏感，敏感的用 wrangler secret put）
 # ============================================================
 [vars]
-AI_MODEL = "deepseek-v4-flash"
+AI_MODEL = "qwen-turbo"
 AI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 AI_TIMEOUT_MS = "120000"
 # 同源部署后 CORS 白名单可简化（前端和 API 同域）
