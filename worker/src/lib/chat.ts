@@ -37,15 +37,20 @@ const DEFAULT_FREE_MODELS = [
 ];
 
 /**
- * 判断错误是否为"免费额度耗尽"（可降级到下一个模型）
+ * 判断错误是否为"免费额度耗尽"或"账户限制"（可降级到下一个模型）
  *
  * 百炼返回 403 + AllocationQuotaFreeTierOnly 时表示该模型免费额度用完。
  * 同时兼容 "Free quota exhausted" 文本（旧版错误格式）。
+ * 也处理 overdue-payment（账户欠费）和 Access denied 等情况。
  */
 function isQuotaExhausted(status: number, detail: string): boolean {
   if (status === 403 && detail.includes("AllocationQuotaFreeTierOnly")) return true;
   if (status === 403 && detail.includes("Free quota exhausted")) return true;
   if (status === 429 && detail.includes("quota")) return true;
+  // 账户欠费或访问被拒（不同模型可能有不同的付费状态）
+  // 百炼可能返回 400 或 403
+  if (detail.includes("overdue-payment")) return true;
+  if (detail.includes("Access denied") && detail.includes("good standing")) return true;
   return false;
 }
 

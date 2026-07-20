@@ -398,6 +398,40 @@ ${SLIDE_TYPE_GUIDE}
 - content.quoteSpeaker: 说话人+画像（如"R07 受访者 · 32岁 · 家庭主妇"）
 - content.quoteSource: segmentId+轮次
 
+### PROCESS（流程图）
+- title: 流程标题（如"用户购买决策流程"）
+- coreMessage: 流程总结
+- content.items: 流程步骤列表，每条格式"步骤名：描述"（3-6步，如"认知：通过广告/朋友推荐了解产品"、"比价：跨平台对比价格和优惠"、"下单：选择价格最优的平台下单"）
+
+### JOURNEY（旅程图）
+- title: 旅程标题（如"用户从认知到复购的完整旅程"）
+- coreMessage: 旅程核心发现
+- content.items: 阶段列表，每条格式"阶段名：用户行为与感受"（3-5阶段，如"购前：信息搜集阶段，用户感到迷茫"、"购中：比价决策阶段，用户感到焦虑"、"购后：使用体验阶段，用户感到满意/失望"）
+
+### PAIN_POINT_MATRIX（痛点矩阵）
+- title: 痛点矩阵标题（如"用户痛点全景：四大核心痛点"）
+- coreMessage: 痛点总结
+- content.items: 痛点列表，每条格式"痛点名：描述与影响"（3-5个，如"价格不透明：用户无法判断最优购买时机，导致决策延迟"、"信息缺失：参数对比工具缺失，用户需自行跳转验证"）
+
+### OPPORTUNITY_MATRIX（机会矩阵）
+- title: 机会矩阵标题（如"三大优化机会方向"）
+- coreMessage: 机会总结
+- content.items: 机会列表，每条格式"机会名：描述与预期效果"（3-5个，如"价格透明化：提供价格趋势预测，预计提升转化率20%"）
+
+### TWO_COLUMN_COMPARE（双栏对比）
+- title: 对比标题
+- coreMessage: 对比结论
+- content.metricLabel: 左栏标题（如"现状"）
+- content.metric: 右栏标题（如"期望"）
+- content.leftColumn: 左栏要点（3-4条）
+- content.rightColumn: 右栏要点（3-4条）
+
+### CAUSE_ANALYSIS（原因分析）
+- title: 分析标题（如"价格焦虑的根本原因分析"）
+- coreMessage: 核心结论
+- content.leftColumn: 现象列表（3-4条，如"用户反复比价不下单"、"购买后立即降价"）
+- content.rightColumn: 根本原因列表（3-4条，与左栏一一对应，如"平台价格波动无规律"、"价保规则隐蔽且申请复杂"）
+
 ### RECOMMENDATIONS
 - title: "X大行动建议" 或类似
 - subtitle: 一句话概括
@@ -412,7 +446,28 @@ ${SLIDE_TYPE_GUIDE}
 - 第一页必须是 COVER
 - 最后一页通常是 CONCLUSION 或 RECOMMENDATIONS
 - 引用原话必须来自 InsightPack 中的 quotes，不得编造
-- evidenceSegmentIds 必须引用 InsightPack 中实际存在的 segmentId`;
+- evidenceSegmentIds 必须引用 InsightPack 中实际存在的 segmentId
+
+## 结构化图形多样性要求（必须遵守）
+
+为了让报告有丰富的结构化图形（而非全是文字页），**必须遵守以下规则**：
+
+1. **至少使用 2 页结构化图形类型**：在 PROCESS、JOURNEY、PAIN_POINT_MATRIX、OPPORTUNITY_MATRIX、TWO_COLUMN_COMPARE、CAUSE_ANALYSIS 中至少选择 2 种
+2. **优先使用图形化类型**：当内容涉及流程、阶段、对比、矩阵、因果关系时，必须使用对应的图形化 slideType，而不是用 KEY_FINDING
+3. **类型映射规则**：
+   - 涉及"购买流程""决策路径""使用步骤"→ 必须用 PROCESS 或 JOURNEY
+   - 涉及"痛点汇总""多维度问题"→ 必须用 PAIN_POINT_MATRIX
+   - 涉及"机会点""优化方向"→ 必须用 OPPORTUNITY_MATRIX
+   - 涉及"现状 vs 期望""对比""差异"→ 必须用 TWO_COLUMN_COMPARE
+   - 涉及"现象与根因""因果分析"→ 必须用 CAUSE_ANALYSIS
+4. **避免连续 3 页相同类型**：不要连续使用相同的 slideType，要穿插不同类型
+5. **10-12 页报告的结构化图形分布建议**：
+   - 1 页 COVER
+   - 1 页 EXECUTIVE_SUMMARY
+   - 4-5 页 KEY_FINDING / INSIGHT_EVIDENCE（文字型发现）
+   - **2-3 页 结构化图形**（PROCESS/JOURNEY/MATRIX/COMPARE）
+   - 1 页 RECOMMENDATIONS
+   - 1 页 CONCLUSION`;
 
 /**
  * 构造第二步的用户 prompt
