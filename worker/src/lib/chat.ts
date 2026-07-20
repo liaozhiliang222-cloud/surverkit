@@ -25,15 +25,19 @@ export interface Env {
 /**
  * 百炼免费模型列表（按优先级排序）
  *
- * 每个模型有独立的免费额度，配额耗尽时自动降级到下一个。
- * 参考：https://www.banzhuti.com/2026-ai-large-model-api-free-10-million-tokens.html
+ * 每个模型有独立的免费额度（100 万 token），配额耗尽时自动降级到下一个。
+ * 包含通义千问、KIMI、GLM 等多厂商模型，提高可用性。
  */
 const DEFAULT_FREE_MODELS = [
-  "qwen-turbo",          // 永久每月 100 万 token 免费
-  "qwen-plus",           // 100 万 token，3 个月有效
-  "deepseek-v4-flash",   // 100 万 token，3 个月有效
-  "qwen3.7-plus",        // 100 万 token，3 个月有效
-  "qwen-max",            // 100 万 token，3 个月有效
+  "qwen3.7-plus",       // 阿里通义千问 3.7-plus，综合能力强
+  "kimi-k2.6",          // 月之暗面 KIMI，长文本处理优秀
+  "qwen3.7-max",        // 阿里通义千问 3.7-max，推理能力强
+  "glm-5.2",            // 智谱 GLM-5.2，中文理解优秀
+  "kimi-k2.7-code",     // 月之暗面 KIMI 代码版，结构化输出好
+  "qwen-turbo",         // 阿里通义千问 turbo，速度快，永久免费
+  "deepseek-v4-flash",  // DeepSeek V4，推理能力强
+  "qwen-plus",          // 阿里通义千问 plus
+  "qwen-max",           // 阿里通义千问 max
 ];
 
 /**

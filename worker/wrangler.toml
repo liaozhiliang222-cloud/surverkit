@@ -37,7 +37,7 @@ run_worker_first = true
 # ============================================================
 [vars]
 AI_MODEL = "qwen3.7-plus"
-AI_FALLBACK_MODELS = "deepseek-v4-flash,qwen-turbo,qwen-plus,qwen-max"
+AI_FALLBACK_MODELS = "kimi-k2.6,qwen3.7-max,glm-5.2,kimi-k2.7-code,qwen-turbo,deepseek-v4-flash,qwen-plus,qwen-max"
 AI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 AI_TIMEOUT_MS = "120000"
 # 同源部署后 CORS 白名单可简化（前端和 API 同域）
