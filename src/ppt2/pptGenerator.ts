@@ -11,6 +11,7 @@
 import type { SlidePlan } from "./schemas/slidePlan";
 import { designSystem } from "./designSystem";
 import { validateAndCompress } from "./capacityValidator";
+import { selectTemplateForPlan } from "./templateRegistry";
 import { ensureLayoutDiversity } from "./layoutDiversity";
 import { processAllSlides } from "./contentProcessor";
 import {
@@ -28,14 +29,22 @@ import {
 } from "./templates/insightCompareQuoteRec";
 import {
   renderCauseAnalysis01,
+  renderCauseAnalysis02,
   renderPainPointMatrix01,
   renderOpportunityMatrix01,
   renderProcess01,
   renderJourney01,
+  renderJourney02,
   renderAgenda01,
   renderConclusion01,
   renderAppendix01,
 } from "./templates/matrixProcessJourney";
+import {
+  renderPyramid01,
+  renderDecisionPath01,
+  renderProductHouse01,
+} from "./templates/structuredVisuals";
+import { isGraphicSlideType, renderVisualImage, type VisualImage } from "./visualRenderer";
 
 // 渲染器映射表：renderer 字段名 → 函数
 const RENDERERS: Record<string, (pptx: any, slide: any, plan: SlidePlan, ctx?: any) => void> = {
@@ -50,13 +59,19 @@ const RENDERERS: Record<string, (pptx: any, slide: any, plan: SlidePlan, ctx?: a
   renderRecommendations01,
   // 第二阶段新增
   renderCauseAnalysis01,
+  renderCauseAnalysis02,
   renderPainPointMatrix01,
   renderOpportunityMatrix01,
   renderProcess01,
   renderJourney01,
+  renderJourney02,
   renderAgenda01,
   renderConclusion01,
   renderAppendix01,
+  // 第一阶段新增：结构化图形渲染器
+  renderPyramid01,
+  renderDecisionPath01,
+  renderProductHouse01,
 };
 
 export interface GeneratePptxOptions {
@@ -130,17 +145,53 @@ export async function generateProReportPptx(
   const finalSlides = diverseSlides;
   const totalPages = finalSlides.length;
 
+  // 预渲染结构化图形（金字塔/决策路径/产品屋）：在批量渲染前一次性生成 PNG，
+  // 避免在 forEach 中混用 async，并集中处理图形渲染失败。
+  const visualImages: Record<string, VisualImage | null> = {};
+  for (const plan of finalSlides) {
+    if (isGraphicSlideType(plan.slideType)) {
+      const items = plan.content.visualItems || [];
+      visualImages[plan.slideId] = await renderVisualImage(plan.slideType, items);
+    }
+  }
+
   // 逐页渲染
   finalSlides.forEach((plan, idx) => {
     const slide = pptx.addSlide();
     const pageNumber = idx + 1;
 
+    // 图形类页面：若无明确 templateId，按是否存在侧注内容自动选 layout 变体
+    let effectivePlan = plan;
+    if (isGraphicSlideType(plan.slideType)) {
+      const hasSideContent = !!(plan.content.visualTree && plan.content.visualTree.length > 0)
+        || !!(plan.content.items && plan.content.items.length > 0);
+      const annotatedId = ({
+        PYRAMID_HIERARCHY: "PYR_02",
+        DECISION_PATH: "DP_02",
+        PRODUCT_HOUSE: "PH_02",
+      } as Record<string, string>)[plan.slideType];
+      if (annotatedId && hasSideContent && !plan.templateId.endsWith("_02")) {
+        effectivePlan = { ...plan, templateId: annotatedId };
+      }
+    }
+
+    // 内容感知模板选择：templateId 为空时，按内容结构挑选最佳 layout 变体
+    // （JOURNEY 有泳道数据→JRN_02；CAUSE 有因果链→CA_02；其余取默认）
+    if (!effectivePlan.templateId) {
+      const sel = selectTemplateForPlan(effectivePlan);
+      if (sel) effectivePlan = { ...effectivePlan, templateId: sel.templateId };
+    }
+
     // 根据模板选择渲染器
-    const rendererName = getRendererNameForSlide(plan);
+    const rendererName = getRendererNameForSlide(effectivePlan);
     const renderer = RENDERERS[rendererName];
 
     if (renderer) {
-      renderer(pptx, slide, plan, { pageNumber, totalPages });
+      renderer(pptx, slide, effectivePlan, {
+        pageNumber,
+        totalPages,
+        visualImage: visualImages[effectivePlan.slideId] ?? null,
+      });
     } else {
       // 兜底：未知类型用执行摘要模板
       console.warn(`[pptGenerator] 未知 slideType: ${plan.slideType}，使用 EXECUTIVE_SUMMARY 兜底`);
@@ -188,13 +239,22 @@ function getRendererNameForSlide(plan: SlidePlan): string {
       "REC_01": "renderRecommendations01",
       // 第二阶段新增
       "CA_01": "renderCauseAnalysis01",
+      "CA_02": "renderCauseAnalysis02",
       "PPM_01": "renderPainPointMatrix01",
       "OM_01": "renderOpportunityMatrix01",
       "PROC_01": "renderProcess01",
       "JRN_01": "renderJourney01",
+      "JRN_02": "renderJourney02",
       "AG_01": "renderAgenda01",
       "CON_01": "renderConclusion01",
       "APX_01": "renderAppendix01",
+      // 第一阶段新增：结构化图形
+      "PYR_01": "renderPyramid01",
+      "PYR_02": "renderPyramid01",
+      "DP_01": "renderDecisionPath01",
+      "DP_02": "renderDecisionPath01",
+      "PH_01": "renderProductHouse01",
+      "PH_02": "renderProductHouse01",
     };
     const name = templateRenderers[plan.templateId];
     if (name && RENDERERS[name]) return name;
@@ -219,6 +279,10 @@ function getRendererNameForSlide(plan: SlidePlan): string {
     "RECOMMENDATIONS": "renderRecommendations01",
     "CONCLUSION": "renderConclusion01",
     "APPENDIX": "renderAppendix01",
+    // 第一阶段新增：结构化图形
+    "PYRAMID_HIERARCHY": "renderPyramid01",
+    "DECISION_PATH": "renderDecisionPath01",
+    "PRODUCT_HOUSE": "renderProductHouse01",
   };
   return typeRendererMap[plan.slideType] || "renderExecutiveSummary01";
 }

@@ -1,10 +1,11 @@
-﻿import { create } from "zustand";
+import { create } from "zustand";
 import {
   getAiHealth,
   hasUserApiKey,
   generateReportFromTranscriptsWithAi,
-  extractInsightsWithAi,
-  planSlidesWithAi,
+  extractInsightsBatched,
+  planReportOutlineWithAi,
+  generateSlidesFromOutlineWithAi,
   renderThumbnails,
   qaCheckSlides,
   regenerateSlide,
@@ -16,6 +17,7 @@ import {
   type ProReportOptions,
   type QACheckResponse,
   type NativeTemplateMeta,
+  type ReportOutlineSlide,
 } from "./aiClient";
 import { db, uid, now } from "./db";
 
@@ -60,7 +62,7 @@ export interface QuickReportResult {
 type QuickReportStatus = "idle" | "generating" | "done" | "error";
 
 /** 专业版报告生成阶段 */
-type ProReportStage = "idle" | "extracting" | "planning" | "done" | "error";
+type ProReportStage = "idle" | "extracting" | "outlining" | "outlineReady" | "generatingSlides" | "done" | "error";
 
 interface AppState {
   aiHealth: AiHealth | null;
@@ -89,13 +91,16 @@ interface AppState {
   proStage: ProReportStage;                  // 当前生成阶段
   proError: string | null;
   proStartedAt: number | null;
+  proProgress: { completed: number; total: number; retrying: boolean };
   proInsightPack: InsightPack | null;        // 第一步输出
   proStoryline: Storyline | null;            // 第二步输出的故事线
+  proOutline: ReportOutlineSlide[] | null;   // 第二步输出的轻量页面大纲
   proSlides: SlidePlan[] | null;             // 第二步输出的逐页规划
   proOptions: ProReportOptions;              // 报告生成选项
   setProMode: (enabled: boolean) => void;
   updateProOptions: (patch: Partial<ProReportOptions>) => void;
   startProReport: () => Promise<void>;
+  generateProSlides: () => Promise<void>;
   resetProReport: () => void;
 
   // 第四阶段：预览与质检
@@ -181,12 +186,14 @@ export const useStore = create<AppState>((set, get) => ({
     }),
 
   // ── 专业版报告（ppt2 架构）──
-  proMode: false,
+  proMode: true,
   proStage: "idle",
   proError: null,
   proStartedAt: null,
+  proProgress: { completed: 0, total: 0, retrying: false },
   proInsightPack: null,
   proStoryline: null,
+  proOutline: null,
   proSlides: null,
   proOptions: {
     reportLength: "标准",
@@ -219,8 +226,10 @@ export const useStore = create<AppState>((set, get) => ({
       proStage: "idle",
       proError: null,
       proStartedAt: null,
+      proProgress: { completed: 0, total: 0, retrying: false },
       proInsightPack: null,
       proStoryline: null,
+      proOutline: null,
       proSlides: null,
       thumbnails: null,
       thumbnailError: null,
@@ -450,49 +459,91 @@ export const useStore = create<AppState>((set, get) => ({
       proError: null,
       proInsightPack: null,
       proStoryline: null,
+      proOutline: null,
       proSlides: null,
       proStartedAt: Date.now(),
+      proProgress: { completed: 0, total: 0, retrying: false },
     });
     addToast(`[专业版] 第1步：提取结构化洞察（${quickTranscripts.length} 份笔录）...`);
 
     try {
-      // ===== 第一步：提取结构化洞察 =====
+      // ===== 第一步：提取结构化洞察（笔录较多时分批并行，显著提速）=====
       const context = Object.values(quickContext).some((v) => v?.trim())
         ? quickContext
         : undefined;
-      const insightResp = await extractInsightsWithAi(quickTranscripts, context);
+      const insightResp = await extractInsightsBatched(
+        quickTranscripts,
+        context,
+        (batchDone, batchTotal, phase) => {
+          set({
+            proProgress: {
+              completed: batchDone,
+              total: batchTotal,
+              retrying: phase === "retrying",
+            },
+          });
+        },
+      );
       const insightParsed = safeParseInsightPack(insightResp.data);
       if (!insightParsed.success) {
         throw new Error(`洞察解析失败：${insightParsed.error}`);
       }
       set({ proInsightPack: insightParsed.data });
-      addToast("[专业版] 第1步完成，开始第2步：规划报告故事线...");
+      addToast("研究摘要已完成，正在生成报告大纲...");
 
-      // ===== 第二步：规划故事线和逐页内容 =====
-      set({ proStage: "planning" });
-      const slideResp = await planSlidesWithAi(
+      // ===== 第二步：只规划摘要、故事线和页面大纲，不生成逐页正文 =====
+      set({ proStage: "outlining", proProgress: { ...get().proProgress, retrying: false } });
+      const outlineResp = await planReportOutlineWithAi(
         insightResp.data,
         proOptions,
       );
-
-      // 解析 storyline（容错：部分模型可能将其嵌套在 data 中）
-      const storylineData = (slideResp.data?.storyline || {}) as Record<string, unknown>;
-      // 解析 slides（使用 Zod 校验）
-      const slidesData = slideResp.data?.slides || [];
-      const slidesParsed = safeParseSlidePlans({ slides: slidesData });
-      if (!slidesParsed.success) {
-        throw new Error(`页面规划解析失败：${slidesParsed.error}`);
-      }
+      const storylineData = (outlineResp.data?.storyline || {}) as Record<string, unknown>;
+      const outline = Array.isArray(outlineResp.data?.outline) ? outlineResp.data.outline : [];
+      if (outline.length === 0) throw new Error("报告大纲为空，请重试");
 
       set({
-        proStage: "done",
+        proStage: "outlineReady",
         proStoryline: storylineData as unknown as Storyline,
-        proSlides: slidesParsed.data,
+        proOutline: outline,
       });
-      addToast(`[专业版] 报告规划完成，共 ${slidesParsed.data.length} 页，可导出 PPT`);
+      addToast(`报告大纲已生成，共 ${outline.length} 页；确认后可生成 PPT`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "专业版报告生成失败";
       set({ proStage: "error", proError: msg });
+      addToast(`生成失败：${msg}`, "error");
+    }
+  },
+
+  generateProSlides: async () => {
+    const { proInsightPack, proOutline, addToast } = get();
+    if (!proInsightPack || !proOutline?.length) {
+      addToast("请先生成研究摘要和报告大纲", "error");
+      return;
+    }
+    set({
+      proStage: "generatingSlides",
+      proError: null,
+      proStartedAt: Date.now(),
+      proProgress: { completed: 0, total: Math.ceil(proOutline.length / 2), retrying: false },
+    });
+    try {
+      const batches: ReportOutlineSlide[][] = [];
+      for (let index = 0; index < proOutline.length; index += 2) {
+        batches.push(proOutline.slice(index, index + 2));
+      }
+      const generated: Array<Record<string, unknown>> = [];
+      for (let index = 0; index < batches.length; index++) {
+        const response = await generateSlidesFromOutlineWithAi(proInsightPack, batches[index]);
+        generated.push(...(response.data?.slides || []));
+        set({ proProgress: { completed: index + 1, total: batches.length, retrying: false } });
+      }
+      const slidesParsed = safeParseSlidePlans({ slides: generated });
+      if (!slidesParsed.success) throw new Error(`页面内容解析失败：${slidesParsed.error}`);
+      set({ proStage: "done", proSlides: slidesParsed.data });
+      addToast(`PPT 页面内容生成完成，共 ${slidesParsed.data.length} 页`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "PPT 页面生成失败";
+      set({ proStage: "outlineReady", proError: msg });
       addToast(`生成失败：${msg}`, "error");
     }
   },

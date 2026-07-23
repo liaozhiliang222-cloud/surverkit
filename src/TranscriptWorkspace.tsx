@@ -795,8 +795,8 @@ export function TranscriptWorkspace({
     : interview.transcriptStatus === "已确认" ? "已完成" : "待操作";
   const steps: { label: string; status: StepStatus }[] = [
     { label: "生成校正建议", status: step1Status },
-    { label: "一键审核", status: step2Status },
-    { label: "确认整份笔录", status: step3Status },
+    { label: "审核修改", status: step2Status },
+    { label: "确认笔录", status: step3Status },
   ];
 
   // 进度条
@@ -832,42 +832,10 @@ export function TranscriptWorkspace({
                 返回校正列表
               </Link>
               <button className="btn-ghost" onClick={() => setCompareMode((value) => !value)}>
-                {compareMode ? "仅看校正后稿" : "校正前后对照"}
+                {compareMode ? "返回校正稿" : "查看修改对照"}
               </button>
               <button className="btn-ghost" onClick={() => void exportCorrectedTranscript()}>
-                导出校正后笔录
-              </button>
-              {aiHealth?.configured && (
-                <button
-                  className="btn-ghost"
-                  disabled={autoRoleRunning || oneClickRunning}
-                  onClick={() => void autoAssignRoles()}
-                >
-                  {autoRoleRunning ? "识别角色中..." : "自动识别角色"}
-                </button>
-              )}
-              {pendingCount > 0 && (
-                <button
-                  className="btn-ghost"
-                  disabled={oneClickRunning}
-                  onClick={() => void reviewAllSuggestions()}
-                >
-                  一键审核（{pendingCount}）
-                </button>
-              )}
-              <button
-                className="btn-primary"
-                disabled={oneClickRunning}
-                onClick={() => void oneClickCorrection()}
-              >
-                {oneClickRunning ? "一键校正中..." : "一键校正"}
-              </button>
-              <button
-                className="btn-ghost"
-                disabled={pendingCount > 0 || oneClickRunning}
-                onClick={() => void confirmAll()}
-              >
-                确认整份笔录
+                导出
               </button>
             </>
           ) : (
@@ -1019,18 +987,49 @@ export function TranscriptWorkspace({
               </select>
             </label>
             <div>
-              <p className="text-sm font-medium">待审核建议：{pendingCount}</p>
+              <p className="text-sm font-medium">
+                {interview.transcriptStatus === "已确认"
+                  ? "这份笔录已经确认"
+                  : pendingCount > 0
+                    ? `下一步：审核 ${pendingCount} 条修改建议`
+                    : hasSuggestions
+                      ? "修改已审核，可以确认笔录"
+                      : "第一步：生成校正建议"}
+              </p>
               <p className="text-xs text-slate-500">
-                原文永久保留；数字、否定与程度表达不会自动改写。
+                默认展示可编辑校正稿；需要核对时点击右上角“查看修改对照”。
               </p>
             </div>
-            <button
-              className="btn-primary"
-              disabled={oneClickRunning || pendingCount > 0}
-              onClick={() => void generateSuggestions()}
-            >
-              生成校正建议
-            </button>
+            {interview.transcriptStatus === "已确认" ? (
+              <span className="rounded-lg bg-green-50 px-4 py-2 text-center text-sm font-medium text-green-700">
+                已完成
+              </span>
+            ) : pendingCount > 0 ? (
+              <button
+                className="btn-primary"
+                disabled={oneClickRunning}
+                onClick={() => void reviewAllSuggestions()}
+                title="接受当前全部待处理建议；也可在右侧逐条接受或拒绝"
+              >
+                接受全部建议（{pendingCount}）
+              </button>
+            ) : hasSuggestions ? (
+              <button
+                className="btn-primary"
+                disabled={oneClickRunning}
+                onClick={() => void confirmAll()}
+              >
+                确认笔录
+              </button>
+            ) : (
+              <button
+                className="btn-primary"
+                disabled={oneClickRunning}
+                onClick={() => void generateSuggestions()}
+              >
+                生成校正建议
+              </button>
+            )}
             {correctionMessage && <p className="text-xs text-brand-700 md:col-span-3">{correctionMessage}</p>}
           </div>
         </>
@@ -1231,13 +1230,6 @@ export function TranscriptWorkspace({
                     </button>
                   )}
                 </div>
-                {mode === "correction" && !compareMode &&
-                  segment.originalText &&
-                  segment.originalText !== segmentCurrentText(segment) && (
-                    <div className="mb-2 rounded bg-red-50 p-2 text-xs text-red-700 line-through">
-                      原文：{segment.originalText}
-                    </div>
-                  )}
                 {mode === "correction" && compareMode ? (
                   <div className="grid gap-3 lg:grid-cols-2">
                     <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">

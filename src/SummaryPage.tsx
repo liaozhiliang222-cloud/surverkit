@@ -4,10 +4,17 @@ import { useLiveQuery } from "dexie-react-hooks";
 import { saveAs } from "file-saver";
 import * as XLSX from "xlsx";
 import { db } from "./db";
-import { generateSummaryWithAi, getAiHealth, suggestDimensionsWithAi, type AiHealth } from "./aiClient";
+import { generateSummaryWithAi, getAiHealth, suggestDimensionsWithAi, recognizeTemplateWithAi, type AiHealth, type SummaryStyleExample, type SummaryDimensionSpec } from "./aiClient";
 import { useStore } from "./store";
 import type { Interview, Project, Respondent } from "./types";
-import type { SummaryRun, SummaryTemplate } from "./types";
+import type { SummaryRun, SummaryTemplate, SummaryTemplateDimension } from "./types";
+import {
+  sheetToGrid,
+  guessStructure,
+  extractTemplateContent,
+  gridToPromptText,
+  type ParsedGrid,
+} from "./summaryTemplateParser";
 
 const defaultDimensions = [
   "购买动机",
@@ -196,54 +203,53 @@ export function SummaryPage() {
     try {
       const data = await file.arrayBuffer();
       const workbook = XLSX.read(data, { type: "array" });
-      const sheetName = workbook.SheetNames.includes("定性小结")
-        ? "定性小结"
-        : workbook.SheetNames[0];
-      if (!sheetName) throw new Error("Excel 中没有可读取的工作表");
-      const ws = workbook.Sheets[sheetName];
-      const range = XLSX.utils.decode_range(ws["!ref"] || "A1");
-      let headerRow0 = 0;
-      let dimensionCol0 = 0;
-      for (let r = range.s.r; r <= range.e.r; r += 1) {
-        for (let c = range.s.c; c <= range.e.c; c += 1) {
-          const cell = ws[XLSX.utils.encode_cell({ r, c })];
-          const value = String(cell?.v ?? cell?.w ?? "").trim();
-          if (value.includes("分析维度")) {
-            headerRow0 = r;
-            dimensionCol0 = c;
-          }
+      // 1) 逐 sheet 用启发式打分，选「受访者列最多」的候选
+      let best: {
+        sheetName: string;
+        grid: ParsedGrid;
+        guess: NonNullable<ReturnType<typeof guessStructure>>;
+      } | null = null;
+      for (const sheetName of workbook.SheetNames) {
+        const ws = workbook.Sheets[sheetName];
+        if (!ws) continue;
+        const grid = sheetToGrid(ws);
+        const guess = guessStructure(grid);
+        if (
+          guess &&
+          (!best || guess.respondentCols.length > best.guess.respondentCols.length)
+        ) {
+          best = { sheetName, grid, guess };
         }
       }
-      const headerRow = headerRow0 + 1;
-      const dimensionColumn = dimensionCol0 + 1;
-      const respondentColumns: Array<{ column: number; label: string }> = [];
-      for (let c = dimensionCol0 + 1; c <= range.e.c; c += 1) {
-        const cell = ws[XLSX.utils.encode_cell({ r: headerRow0, c })];
-        const label = String(cell?.v ?? cell?.w ?? "").trim();
-        if (!label || label === "★" || label.includes("备注")) break;
-        if (/受访者|^[PR]\d+/i.test(label))
-          respondentColumns.push({ column: c + 1, label });
+      // 2) 启发式置信度不足时，回退到 AI 结构识别
+      let usedAi = false;
+      if (!best || best.guess.confidence < 0.6) {
+        const aiGuess = await tryAiRecognize(workbook);
+        if (aiGuess) {
+          best = aiGuess;
+          usedAi = true;
+        }
       }
-      if (!respondentColumns.length)
+      if (!best) {
         throw new Error(
-          "未识别到受访者列，请确认表头包含 P1/P2 或“受访者”字样",
+          "未能识别模板结构。请确认表格左侧为分析维度、右侧每列为一位受访者/一个分组，且存在表头行。",
         );
-      const dimensions: Array<{ row: number; name: string }> = [];
-      for (let r = headerRow0 + 1; r <= range.e.r; r += 1) {
-        const cell = ws[XLSX.utils.encode_cell({ r, c: dimensionCol0 })];
-        const name = String(cell?.v ?? cell?.w ?? "").trim();
-        if (
-          name &&
-          !name.includes("填写说明") &&
-          !dimensions.some((item) => item.name === name)
-        )
-          dimensions.push({ row: r + 1, name });
       }
-      if (!dimensions.length) throw new Error("未识别到分析维度行");
-      const duplicateNames = dimensions.map((item) => item.name).filter((name, index, list) => list.indexOf(name) !== index);
+      const { sheetName, grid, guess } = best;
+      const { dimensions, columns } = extractTemplateContent(grid, guess);
+      if (!columns.length) throw new Error("未识别到受访者/分组列");
+      if (!dimensions.length) throw new Error("未识别到可填写的分析维度行");
+
+      const duplicateNames = dimensions
+        .map((item) => item.name)
+        .filter((name, index, list) => list.indexOf(name) !== index);
+      const filledCount = columns.filter((c) => c.hasContent).length;
       const warnings = [
         ...new Set(duplicateNames.map((name) => `存在重复分析维度：${name}`)),
-        ...(respondentColumns.length < 2 ? ["模板受访者列少于 2 列，批量导出时可能不足"] : []),
+        ...(filledCount > 0
+          ? [`检测到 ${filledCount} 列已填写内容，生成时将作为风格样例学习`]
+          : []),
+        ...(usedAi ? ["模板结构由 AI 辅助识别，请核对维度与受访者列"] : []),
       ];
       const item: SummaryTemplate = {
         id: summaryTemplate?.id || crypto.randomUUID(),
@@ -251,10 +257,13 @@ export function SummaryPage() {
         name: file.name.replace(/\.xlsx?$/i, ""),
         fileName: file.name,
         sheetName,
-        dimensionColumn,
-        respondentColumns,
+        dimensionColumn: guess.leafDimensionCol + 1,
+        dimensionColumns: guess.dimensionCols.map((c) => c + 1),
+        respondentColumns: columns,
         dimensions,
-        headerRow,
+        headerRow: guess.headerRow0 + 1,
+        dataStartRow: guess.dataStartRow0 + 1,
+        templateKind: guess.kind,
         validationWarnings: warnings,
         fileData: data,
         createdAt: new Date().toISOString(),
@@ -264,7 +273,8 @@ export function SummaryPage() {
       setDimensions(dimensions.map((entry) => entry.name));
       setSummaries(null);
       addToast(
-        `已导入模板：${dimensions.length} 个维度，${respondentColumns.length} 个受访者列`,
+        `已导入模板：${dimensions.length} 个维度，${columns.length} 个${guess.kind === "group" ? "分组" : "受访者"}列` +
+          (filledCount > 0 ? `（含 ${filledCount} 列已有内容）` : ""),
       );
     } catch (e) {
       const message = e instanceof Error ? e.message : "模板解析失败";
@@ -272,6 +282,145 @@ export function SummaryPage() {
       addToast(message, "error");
     } finally {
       setTemplateBusy(false);
+    }
+  }
+
+  // 启发式失败时，用 AI 识别模板结构（把网格文本交给 LLM 判断表头/维度/受访者列）
+  async function tryAiRecognize(
+    workbook: XLSX.WorkBook,
+  ): Promise<{
+    sheetName: string;
+    grid: ParsedGrid;
+    guess: NonNullable<ReturnType<typeof guessStructure>>;
+  } | null> {
+    if (!aiHealth?.configured) return null;
+    for (const sheetName of workbook.SheetNames) {
+      const ws = workbook.Sheets[sheetName];
+      if (!ws) continue;
+      const grid = sheetToGrid(ws);
+      if (grid.rows < 2 || grid.cols < 2) continue;
+      try {
+        const resp = await recognizeTemplateWithAi(gridToPromptText(grid));
+        const s = resp.data;
+        if (!s || s.headerRow == null || !s.respondentCols?.length) continue;
+        const headerRow0 = Math.max(0, s.headerRow - 1);
+        const dimensionCols = (s.dimensionCols?.length
+          ? s.dimensionCols
+          : [s.dimensionCol ?? 1]
+        ).map((c) => c - 1);
+        const leafDimensionCol = (s.leafDimensionCol ?? dimensionCols[dimensionCols.length - 1]) - 1;
+        const guess = {
+          headerRow0,
+          dimensionCols,
+          leafDimensionCol,
+          respondentCols: s.respondentCols.map((c) => c - 1),
+          dataStartRow0: headerRow0 + 1,
+          confidence: 0.7,
+          kind: (s.kind === "group" ? "group" : "single") as "single" | "group",
+        };
+        return { sheetName, grid, guess };
+      } catch {
+        continue;
+      }
+    }
+    return null;
+  }
+
+  // 构建风格样例：从模板中已填写的列（用户手写的第一用户/第一组）提取
+  function buildStyleExample(): SummaryStyleExample | null {
+    if (!summaryTemplate) return null;
+    // 取第一个 hasContent 的列作为风格样例（用户通常先写第一列）
+    const sampleCol = summaryTemplate.respondentColumns.find(
+      (c) => c.hasContent && c.styleSample && Object.keys(c.styleSample).length > 0,
+    );
+    if (!sampleCol || !sampleCol.styleSample) return null;
+    const styleSample = sampleCol.styleSample;
+    const dims: Array<{ name: string; path?: string; content: string }> = [];
+    for (const d of summaryTemplate.dimensions) {
+      const key = d.path || d.name;
+      const content = styleSample[key];
+      if (content) dims.push({ name: d.name, path: d.path, content });
+    }
+    if (dims.length === 0) return null;
+    return { respondentCode: sampleCol.label, dimensions: dims };
+  }
+
+  // 维度规格：带 path（若有模板），帮助 AI 理解维度语义
+  function buildDimensionSpecs(): SummaryDimensionSpec[] {
+    if (summaryTemplate && summaryTemplate.dimensions.length) {
+      return summaryTemplate.dimensions.map((d) => ({ name: d.name, path: d.path }));
+    }
+    return dimensions.map((d) => ({ name: d }));
+  }
+
+  /**
+   * 核心生成流程：分批（每批最多 batchSize 位受访者）+ 风格样例。
+   * 每批独立调用 AI，增量合并，更新进度。
+   */
+  async function runGeneration(
+    targetInterviewIds: string[],
+    targetInterviews: Interview[],
+    targetRespondents: Respondent[],
+    targetSegments: typeof segments,
+  ) {
+    if (!selectedProject) return;
+    const jobId = crypto.randomUUID();
+    setActiveJobId(jobId);
+    await db.aiJobs.put({
+      id: jobId, projectId: selectedProject.id, kind: "summary", status: "running", progress: 5, attempts: 1,
+      input: JSON.stringify({ interviewIds: targetInterviewIds, dimensions }), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    });
+    try {
+      const styleExample = buildStyleExample();
+      const dimSpecs = buildDimensionSpecs();
+      // 按受访者分批：每批 1 位受访者（其全部访谈），避免单次请求超上下文
+      const BATCH_SIZE = 1;
+      const batches: Respondent[][] = [];
+      for (let i = 0; i < targetRespondents.length; i += BATCH_SIZE) {
+        batches.push(targetRespondents.slice(i, i + BATCH_SIZE));
+      }
+      const allRows: SummaryRow[] = [];
+      let model = "";
+      for (let b = 0; b < batches.length; b += 1) {
+        const batch = batches[b];
+        const batchIds = new Set(batch.map((r) => r.id));
+        const batchInterviews = targetInterviews.filter((i) => i.respondentId && batchIds.has(i.respondentId));
+        const batchInterviewIds = new Set(batchInterviews.map((i) => i.id));
+        const batchSegments = targetSegments.filter((s) => batchInterviewIds.has(s.interviewId));
+        const response = await generateSummaryWithAi(
+          selectedProject,
+          batch,
+          batchInterviews,
+          batchSegments,
+          dimSpecs,
+          styleExample,
+        );
+        model = response.model;
+        const rows: SummaryRow[] = response.data?.summaries || [];
+        allRows.push(...rows);
+        // 增量更新进度 + 局部刷新预览
+        const progress = 5 + Math.round(((b + 1) / batches.length) * 90);
+        await db.aiJobs.update(jobId, { progress, updatedAt: new Date().toISOString() });
+        setSummaries([...allRows]);
+      }
+      if (allRows.length === 0) throw new Error("AI 未返回可用的小结内容");
+      setSummaries(allRows);
+      const createdAt = new Date().toISOString();
+      await db.aiJobs.update(jobId, { status: "completed", progress: 100, output: JSON.stringify(allRows), updatedAt: createdAt });
+      const previousVersion = Math.max(0, ...summaryRuns.map((run) => run.version));
+      await db.summaryRuns.add({
+        id: crypto.randomUUID(), projectId: selectedProject.id, version: previousVersion + 1, model,
+        interviewIds: targetInterviewIds, dimensions, summaries: JSON.stringify(allRows), status: "草稿", createdAt,
+      });
+      const styleNote = styleExample ? `（已学习「${styleExample.respondentCode}」的写法）` : "";
+      addToast(`${model} 已生成 ${allRows.length} 位受访者的访谈小结${styleNote}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "生成小结失败";
+      setError(msg);
+      await db.aiJobs.update(jobId, { status: "failed", error: msg, updatedAt: new Date().toISOString() });
+      addToast("生成小结失败", "error");
+    } finally {
+      setGenerating(false);
     }
   }
 
@@ -289,47 +438,17 @@ export function SummaryPage() {
       addToast("AI 服务暂不可用，请稍后重试", "error");
       return;
     }
+    const styleExample = buildStyleExample();
+    const styleNote = styleExample ? `\n检测到已填写的「${styleExample.respondentCode}」列，AI 将学习其写法应用到其他受访者。` : "";
     const confirmed = window.confirm(
-      `将把选中的 ${selectedInterviewIds.length} 份访谈笔录发送至AI 服务生成访谈小结，是否继续？`,
+      `将把选中的 ${selectedInterviewIds.length} 份访谈笔录发送至 AI 服务生成访谈小结。${styleNote}\n是否继续？`,
     );
     if (!confirmed) return;
 
     setGenerating(true);
     setError("");
     setSummaries(null);
-    const jobId = crypto.randomUUID();
-    setActiveJobId(jobId);
-    await db.aiJobs.put({
-      id: jobId, projectId: selectedProject.id, kind: "summary", status: "running", progress: 10, attempts: 1,
-      input: JSON.stringify({ interviewIds: selectedInterviewIds, dimensions }), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-    });
-    try {
-      const response = await generateSummaryWithAi(
-        selectedProject,
-        involvedRespondents,
-        selectedInterviews,
-        segments,
-        dimensions,
-      );
-      const rows: SummaryRow[] = response.data?.summaries || [];
-      if (rows.length === 0) throw new Error("AI 未返回可用的小结内容");
-      setSummaries(rows);
-      const createdAt = new Date().toISOString();
-      await db.aiJobs.update(jobId, { status: "completed", progress: 100, output: JSON.stringify(rows), updatedAt: createdAt });
-      const previousVersion = Math.max(0, ...summaryRuns.map((run) => run.version));
-      await db.summaryRuns.add({
-        id: crypto.randomUUID(), projectId: selectedProject.id, version: previousVersion + 1, model: response.model,
-        interviewIds: selectedInterviewIds, dimensions, summaries: JSON.stringify(rows), status: "草稿", createdAt,
-      });
-      addToast(`${response.model} 已生成 ${rows.length} 位受访者的访谈小结`);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "生成小结失败";
-      setError(msg);
-      await db.aiJobs.update(jobId, { status: "failed", error: msg, updatedAt: new Date().toISOString() });
-      addToast("生成小结失败", "error");
-    } finally {
-      setGenerating(false);
-    }
+    await runGeneration(selectedInterviewIds, selectedInterviews, involvedRespondents, segments);
   }
 
   async function oneClickGenerate() {
@@ -348,55 +467,18 @@ export function SummaryPage() {
       addToast("请至少保留一个分析维度", "info");
       return;
     }
+    const styleExample = buildStyleExample();
+    const styleNote = styleExample ? `\n检测到已填写的「${styleExample.respondentCode}」列，AI 将学习其写法应用到其他受访者。` : "";
     const confirmed = window.confirm(
-      `将自动选中全部 ${allIds.length} 份已确认访谈，按 ${dimensions.length} 个维度一键生成访谈小结，是否继续？`,
+      `将自动选中全部 ${allIds.length} 份已确认访谈，按 ${dimensions.length} 个维度一键生成访谈小结。${styleNote}\n是否继续？`,
     );
     if (!confirmed) return;
 
     setGenerating(true);
     setError("");
     setSummaries(null);
-    const jobId = crypto.randomUUID();
-    setActiveJobId(jobId);
-    const selectedInterviews = interviews;
-    const involvedRespondents = respondents.filter((r) =>
-      selectedInterviews.some((i) => i.respondentId === r.id),
-    );
-    const allSegments = await db.segments
-      .where("interviewId")
-      .anyOf(allIds)
-      .toArray();
-    await db.aiJobs.put({
-      id: jobId, projectId: selectedProject.id, kind: "summary", status: "running", progress: 10, attempts: 1,
-      input: JSON.stringify({ interviewIds: allIds, dimensions }), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-    });
-    try {
-      const response = await generateSummaryWithAi(
-        selectedProject,
-        involvedRespondents,
-        selectedInterviews,
-        allSegments,
-        dimensions,
-      );
-      const rows: SummaryRow[] = response.data?.summaries || [];
-      if (rows.length === 0) throw new Error("AI 未返回可用的小结内容");
-      setSummaries(rows);
-      const createdAt = new Date().toISOString();
-      await db.aiJobs.update(jobId, { status: "completed", progress: 100, output: JSON.stringify(rows), updatedAt: createdAt });
-      const previousVersion = Math.max(0, ...summaryRuns.map((run) => run.version));
-      await db.summaryRuns.add({
-        id: crypto.randomUUID(), projectId: selectedProject.id, version: previousVersion + 1, model: response.model,
-        interviewIds: allIds, dimensions, summaries: JSON.stringify(rows), status: "草稿", createdAt,
-      });
-      addToast(`${response.model} 已生成 ${rows.length} 位受访者的访谈小结，可前往洞察分析或定性报告继续`);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "生成小结失败";
-      setError(msg);
-      await db.aiJobs.update(jobId, { status: "failed", error: msg, updatedAt: new Date().toISOString() });
-      addToast("生成小结失败", "error");
-    } finally {
-      setGenerating(false);
-    }
+    const allSegments = await db.segments.where("interviewId").anyOf(allIds).toArray();
+    await runGeneration(allIds, interviews, respondents.filter((r) => interviews.some((i) => i.respondentId === r.id)), allSegments);
   }
 
   async function aiSuggestDimensions() {
@@ -427,42 +509,98 @@ export function SummaryPage() {
   async function exportExcel() {
     if (!summaries || summaries.length === 0) return;
     if (summaryTemplate) {
-      if (columnRespondents.length > summaryTemplate.respondentColumns.length) {
-        addToast(
-          `模板只有 ${summaryTemplate.respondentColumns.length} 个受访者列，当前结果有 ${columnRespondents.length} 位`,
-          "error",
-        );
-        return;
-      }
-      const wb = XLSX.read(summaryTemplate.fileData, { type: "array" });
+      // cellStyles:true 让 xlsx 读取并回写单元格样式（s 字段），从而保留原模板样式
+      const wb = XLSX.read(summaryTemplate.fileData, { type: "array", cellStyles: true });
       const ws = wb.Sheets[summaryTemplate.sheetName];
       if (!ws) {
         addToast("模板工作表已损坏", "error");
         return;
       }
+      const tplCols = summaryTemplate.respondentColumns;
+      const headerRow0 = (summaryTemplate.headerRow || 1) - 1;
+
+      // ---- 列扩容：受访者数超过模板列数时，复制最后一列的样式/列宽新建列 ----
+      if (columnRespondents.length > tplCols.length) {
+        const extra = columnRespondents.length - tplCols.length;
+        const lastCol0 = tplCols[tplCols.length - 1].column - 1;
+        const range = XLSX.utils.decode_range(ws["!ref"] || "A1");
+        // 列宽沿用最后一列
+        const colsArr = (ws["!cols"] = ws["!cols"] || []);
+        for (let k = 1; k <= extra; k += 1) {
+          const targetCol0 = lastCol0 + k;
+          colsArr[targetCol0] = colsArr[lastCol0]
+            ? { ...colsArr[lastCol0] }
+            : { wch: 40 };
+          // 表头写受访者编号（复制最后一列表头样式）
+          const srcHeaderAddr = XLSX.utils.encode_cell({ r: headerRow0, c: lastCol0 });
+          const dstHeaderAddr = XLSX.utils.encode_cell({ r: headerRow0, c: targetCol0 });
+          const srcHeader = ws[srcHeaderAddr] || { t: "s", v: "" };
+          ws[dstHeaderAddr] = { ...srcHeader, v: "" }; // 表头文字留待下面填
+          // 复制每个维度行的样式
+          for (const dim of summaryTemplate.dimensions) {
+            const srcAddr = XLSX.utils.encode_cell({ r: dim.row - 1, c: lastCol0 });
+            const dstAddr = XLSX.utils.encode_cell({ r: dim.row - 1, c: targetCol0 });
+            const src = ws[srcAddr] || {};
+            ws[dstAddr] = { ...src, v: "", w: undefined };
+          }
+          range.e.c = Math.max(range.e.c, targetCol0);
+        }
+        ws["!ref"] = XLSX.utils.encode_range(range);
+        // 扩展模板列定义用于写入
+        for (let k = 1; k <= extra; k += 1) {
+          tplCols.push({ column: lastCol0 + k + 1, label: "", role: "respondent" });
+        }
+        addToast(`模板列不足，已按最后一列样式自动扩容 ${extra} 列`, "info");
+      }
+
+      // 维度名 -> 模板行（用 name 与 path 双重匹配，兼容重复维度名）
+      const findDimRow = (dimName: string): number | null => {
+        const d = summaryTemplate.dimensions.find(
+          (x) => x.name === dimName || x.path === dimName,
+        );
+        return d ? d.row : null;
+      };
+
       summaryTemplate.dimensions.forEach((dimension) => {
         columnRespondents.forEach((respondent, index) => {
+          const col = tplCols[index];
+          if (!col) return;
           const cellAddress = XLSX.utils.encode_cell({
             r: dimension.row - 1,
-            c: summaryTemplate.respondentColumns[index].column - 1,
+            c: col.column - 1,
           });
           const content =
             getContent(respondent.respondentId, dimension.name) ||
+            getContent(respondent.respondentId, dimension.path || "") ||
             "本次访谈未涉及";
           const existing = ws[cellAddress] || {};
+          // 只改值与类型，保留 existing.s（样式）
           existing.t = "s";
           existing.v = content;
+          delete existing.w;
           ws[cellAddress] = existing;
         });
       });
-      const buffer = XLSX.write(wb, { type: "array", bookType: "xlsx" });
+      // 扩容列表头补受访者编号
+      columnRespondents.forEach((respondent, index) => {
+        const col = tplCols[index];
+        if (!col) return;
+        if (!col.label) {
+          const addr = XLSX.utils.encode_cell({ r: headerRow0, c: col.column - 1 });
+          const cell = ws[addr] || { t: "s" };
+          cell.t = "s";
+          cell.v = respondent.respondentCode;
+          ws[addr] = cell;
+        }
+      });
+      const buffer = XLSX.write(wb, { type: "array", bookType: "xlsx", cellStyles: true });
       saveAs(
         new Blob([buffer], {
           type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         }),
         `${selectedProject?.name || "项目"}-${summaryTemplate.name}-访谈小结.xlsx`,
       );
-      addToast("已按导入模板导出 Excel");
+      addToast("已按导入模板导出 Excel（保留原样式）");
       return;
     }
     const header: string[] = [
@@ -685,18 +823,31 @@ export function SummaryPage() {
                   </button>
                 </div>
                 <p className="mt-1 text-xs text-green-700">
-                  工作表：{summaryTemplate.sheetName}；受访者列：
+                  工作表：{summaryTemplate.sheetName}；类型：
+                  {summaryTemplate.templateKind === "group" ? "分组小结（每列一组）" : "单人小结（每列一位受访者）"}；列：
                   {summaryTemplate.respondentColumns
-                    .map((item) => item.label)
+                    .map((item) => item.label || "（空）")
                     .join("、")}
                 </p>
+                {(() => {
+                  const sample = summaryTemplate.respondentColumns.find((c) => c.hasContent);
+                  return sample ? (
+                    <p className="mt-1 rounded bg-brand-50 px-2 py-1 text-xs text-brand-800">
+                      已检测到「{sample.label}」列有手写小结，生成时 AI 将学习其写法应用到其他列。
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-xs text-slate-500">
+                      提示：在模板中先写好第一个用户/第一组的小结再导入，AI 会学习其写法应用到后续小结。
+                    </p>
+                  );
+                })()}
                 {!!summaryTemplate.validationWarnings?.length && <ul className="mt-2 list-disc pl-5 text-xs text-amber-700">{summaryTemplate.validationWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
               </div>
             )}
             {!summaryTemplate && (
               <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-slate-50 p-3 text-xs text-slate-600">
-                支持 qual-excel
-                结构：左侧为分析维度，右侧每列一位受访者；将保留原模板的表头、颜色、列宽、行高、合并单元格和冻结窗格。
+                支持任意 Excel 小结模板：自动识别表头、左侧分析维度（支持多列层级）与右侧受访者/分组列（深访单人列、座谈会城市分组列均可）；
+                生成结果将严格遵循笔录（未涉及维度填"本次访谈未涉及"，每条小结附原话佐证），并保留原模板的表头、颜色、列宽、行高、合并单元格和冻结窗格。
                 <button
                   type="button"
                   className="ml-2 font-medium text-brand-700 underline"

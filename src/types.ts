@@ -81,16 +81,38 @@ export interface ReportTemplate {
   accentColor: string;
   createdAt: string;
 }
+export interface SummaryTemplateDimension {
+  row: number; // 1-based 数据行（写入目标行）
+  name: string; // 末级维度名（用于 AI 生成与匹配）
+  path?: string; // 完整层级路径，如 "第一部分/还原生活/基础信息"
+  merged?: boolean; // 该行是否属于某个合并区（内容应写入起始行）
+}
+
+export interface SummaryTemplateColumn {
+  column: number; // 1-based 列号
+  label: string; // 表头原始标签（被访者：刘畅 / 青岛 / P1 ...）
+  role: "respondent" | "dimension" | "meta" | "notes";
+  // 该列是否已含用户手写内容（作为风格样例候选）
+  hasContent?: boolean;
+  // 提取的该列风格样例（按维度 path -> content）
+  styleSample?: Record<string, string>;
+}
+
 export interface SummaryTemplate {
   id: string;
   projectId: string;
   name: string;
   fileName: string;
   sheetName: string;
-  dimensionColumn: number;
-  respondentColumns: Array<{ column: number; label: string }>;
-  dimensions: Array<{ row: number; name: string }>;
-  headerRow?: number;
+  // 维度（表侧）起始列，可能有多列层级
+  dimensionColumn: number; // 末级维度所在列（写入时定位用）
+  dimensionColumns?: number[]; // 全部维度层级列（含父级）
+  respondentColumns: SummaryTemplateColumn[];
+  dimensions: SummaryTemplateDimension[];
+  headerRow?: number; // 1-based 表头行
+  dataStartRow?: number; // 1-based 第一个数据行
+  // 模板类型：single=每列一个受访者(深访) group=每列一组(座谈会/城市分组)
+  templateKind?: "single" | "group";
   validationWarnings?: string[];
   fileData: ArrayBuffer;
   createdAt: string;

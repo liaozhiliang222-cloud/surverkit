@@ -48,6 +48,10 @@ const TEMPLATE_MAP = {
   RECOMMENDATIONS: "native-keyfinding-01.pptx",
   CONCLUSION: "native-cover-01.pptx",
   APPENDIX: "native-keyfinding-01.pptx",
+  // 第一阶段新增：结构化图形类型
+  PYRAMID_HIERARCHY: "native-keyfinding-01.pptx",
+  DECISION_PATH: "native-keyfinding-01.pptx",
+  PRODUCT_HOUSE: "native-keyfinding-01.pptx",
 };
 
 // ====== 占位符正则 ======
@@ -100,6 +104,33 @@ function getPlaceholderValue(token, slide, ctx) {
         const idx = parseInt(token.slice(13), 10) - 1;
         const items = content.visualItems || [];
         return items[idx] || "";
+      }
+      // 结构化占位符：旅程阶段 / 矩阵单元格 / 因果链
+      if (token.startsWith("STAGE_")) {
+        const m = token.match(/^STAGE_(\d+)_(\w+)$/);
+        if (m) {
+          const st = (content.journeyStages || [])[parseInt(m[1], 10) - 1];
+          return st ? (st[m[2].toLowerCase()] || "") : "";
+        }
+      }
+      if (token.startsWith("CELL_")) {
+        const m = token.match(/^CELL_(\d+)_(\w+)$/);
+        if (m) {
+          const c = (content.matrixCells || [])[parseInt(m[1], 10) - 1];
+          if (!c) return "";
+          if (m[2] === "LEVEL") return c.severity || c.priority || "";
+          return c[m[2].toLowerCase()] || "";
+        }
+      }
+      if (token.startsWith("CHAIN_")) {
+        const m = token.match(/^CHAIN_(\d+)_(\w+)$/);
+        if (m) {
+          const ch = (content.causalChains || [])[parseInt(m[1], 10) - 1];
+          if (!ch) return "";
+          if (m[2] === "SURFACE") return (ch.surfaceCauses || []).join("；");
+          if (m[2] === "ROOT") return (ch.rootCauses || []).join("；");
+          return ch[m[2].toLowerCase()] || "";
+        }
       }
       return "";
   }

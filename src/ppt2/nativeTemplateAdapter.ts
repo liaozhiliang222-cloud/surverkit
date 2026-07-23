@@ -99,7 +99,29 @@ export function expandListToken(token: string, maxItems: number): string[] {
 }
 
 /**
- * 获取所有实际占位符 token（含展开后的列表 token）
+ * 结构化占位符 token（第二阶段新增，对应 journeyStages / matrixCells / causalChains）
+ * 模板作者可在 PowerPoint 中使用这些占位符承载升级后的结构化内容。
+ * 命名规则：<前缀>_<序号>_<字段>
+ */
+export const STRUCTURED_PLACEHOLDER_TOKENS: string[] = (() => {
+  const tokens: string[] = [];
+  // 旅程阶段（最多 8 阶段）
+  for (let i = 1; i <= 8; i++) {
+    tokens.push(`STAGE_${i}_STAGE`, `STAGE_${i}_BEHAVIOR`, `STAGE_${i}_TOUCHPOINT`, `STAGE_${i}_EMOTION`, `STAGE_${i}_PAIN`);
+  }
+  // 矩阵单元格（最多 9 格）
+  for (let i = 1; i <= 9; i++) {
+    tokens.push(`CELL_${i}_TITLE`, `CELL_${i}_DESC`, `CELL_${i}_LEVEL`);
+  }
+  // 因果链（最多 6 条）
+  for (let i = 1; i <= 6; i++) {
+    tokens.push(`CHAIN_${i}_EFFECT`, `CHAIN_${i}_SURFACE`, `CHAIN_${i}_ROOT`);
+  }
+  return tokens;
+})();
+
+/**
+ * 获取所有实际占位符 token（含展开后的列表 token + 结构化 token）
  */
 export function getAllPlaceholderTokens(): string[] {
   const tokens: string[] = [];
@@ -110,6 +132,7 @@ export function getAllPlaceholderTokens(): string[] {
       tokens.push(def.token);
     }
   }
+  tokens.push(...STRUCTURED_PLACEHOLDER_TOKENS);
   return tokens;
 }
 
@@ -164,8 +187,12 @@ export const BUILTIN_NATIVE_TEMPLATES: NativeTemplateMeta[] = [
     templateId: "native-keyfinding-01",
     name: "关键发现模板",
     fileName: "native-keyfinding-01.pptx",
-    slideTypes: ["KEY_FINDING", "EXECUTIVE_SUMMARY"],
-    description: "单页关键发现，含标题、核心信息、要点列表占位符",
+    slideTypes: [
+      "KEY_FINDING", "EXECUTIVE_SUMMARY", "THREE_INSIGHTS",
+      "PROCESS", "JOURNEY", "PAIN_POINT_MATRIX", "OPPORTUNITY_MATRIX",
+      "PYRAMID_HIERARCHY", "DECISION_PATH", "PRODUCT_HOUSE", "RECOMMENDATIONS",
+    ],
+    description: "通用内容页模板，含标题、核心信息、要点列表占位符；兼容结构化图形/矩阵/旅程类页面（视觉内容映射到 VISUAL_LABEL / ITEM 占位符）",
     slideCount: 1,
     detectedPlaceholders: ["PAGE_TITLE", "CORE_MESSAGE", "ITEM_1", "ITEM_2", "ITEM_3", "ITEM_4", "ITEM_5"],
     isCustom: false,
@@ -272,6 +299,35 @@ export function buildPlaceholderValues(ctx: PlaceholderContext): Map<string, str
   const visualItems = slide.content.visualItems || [];
   for (let i = 0; i < 6; i++) {
     values.set(`VISUAL_LABEL_${i + 1}`, visualItems[i] || "");
+  }
+
+  // 结构化字段：journeyStages → STAGE_<i>_*（最多 8 阶段）
+  const stages = slide.content.journeyStages || [];
+  for (let i = 0; i < 8; i++) {
+    const s = stages[i];
+    values.set(`STAGE_${i + 1}_STAGE`, s?.stage || "");
+    values.set(`STAGE_${i + 1}_BEHAVIOR`, s?.behavior || "");
+    values.set(`STAGE_${i + 1}_TOUCHPOINT`, s?.touchpoint || "");
+    values.set(`STAGE_${i + 1}_EMOTION`, s?.emotion || "");
+    values.set(`STAGE_${i + 1}_PAIN`, s?.painPoint || "");
+  }
+
+  // 结构化字段：matrixCells → CELL_<i>_*（最多 9 格）
+  const cells = slide.content.matrixCells || [];
+  for (let i = 0; i < 9; i++) {
+    const c = cells[i];
+    values.set(`CELL_${i + 1}_TITLE`, c?.title || "");
+    values.set(`CELL_${i + 1}_DESC`, c?.description || "");
+    values.set(`CELL_${i + 1}_LEVEL`, c ? (c.severity || c.priority || "") : "");
+  }
+
+  // 结构化字段：causalChains → CHAIN_<i>_*（最多 6 条）
+  const chains = slide.content.causalChains || [];
+  for (let i = 0; i < 6; i++) {
+    const ch = chains[i];
+    values.set(`CHAIN_${i + 1}_EFFECT`, ch?.effect || "");
+    values.set(`CHAIN_${i + 1}_SURFACE`, (ch?.surfaceCauses || []).join("；"));
+    values.set(`CHAIN_${i + 1}_ROOT`, (ch?.rootCauses || []).join("；"));
   }
 
   return values;

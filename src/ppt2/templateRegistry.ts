@@ -9,7 +9,7 @@
  * - 同一 slideType 可对应多个 templateId
  * - 支持按内容长度自动选择合适容量的模板
  */
-import type { SlideType } from "./schemas/slidePlan";
+import type { SlideType, SlidePlan } from "./schemas/slidePlan";
 import type { TemplateDefinition, TemplateCapacity } from "./schemas/template";
 
 // ====== 容量预设 ======
@@ -29,9 +29,15 @@ const CAPACITY: Record<string, Partial<TemplateCapacity>> = {
   opportunityMatrix: { titleMaxChars: 32, subtitleMaxChars: 50, bodyMaxChars: 480, maxItems: 6, itemMaxChars: 100, minFontSize: 11 },
   process: { titleMaxChars: 32, subtitleMaxChars: 50, bodyMaxChars: 400, maxItems: 5, itemMaxChars: 90, minFontSize: 11 },
   journey: { titleMaxChars: 32, subtitleMaxChars: 50, bodyMaxChars: 500, maxItems: 5, itemMaxChars: 100, minFontSize: 11 },
+  journeySwimlane: { titleMaxChars: 32, subtitleMaxChars: 50, bodyMaxChars: 500, maxItems: 8, itemMaxChars: 100, minFontSize: 11 },
+  causeTree: { titleMaxChars: 36, subtitleMaxChars: 50, bodyMaxChars: 600, maxItems: 6, itemMaxChars: 90, minFontSize: 12 },
   agenda: { titleMaxChars: 20, subtitleMaxChars: 50, bodyMaxChars: 400, maxItems: 6, itemMaxChars: 80, minFontSize: 12 },
   conclusion: { titleMaxChars: 30, subtitleMaxChars: 60, bodyMaxChars: 320, maxItems: 4, itemMaxChars: 80, minFontSize: 13 },
   appendix: { titleMaxChars: 20, subtitleMaxChars: 50, bodyMaxChars: 500, maxItems: 6, itemMaxChars: 90, minFontSize: 12 },
+  // 第一阶段新增：结构化图形类型容量预设
+  pyramid: { titleMaxChars: 30, subtitleMaxChars: 50, bodyMaxChars: 400, maxItems: 4, itemMaxChars: 80, minFontSize: 12 },
+  decisionPath: { titleMaxChars: 32, subtitleMaxChars: 50, bodyMaxChars: 400, maxItems: 6, itemMaxChars: 90, minFontSize: 12 },
+  productHouse: { titleMaxChars: 30, subtitleMaxChars: 50, bodyMaxChars: 400, maxItems: 4, itemMaxChars: 80, minFontSize: 12 },
 };
 
 function makeCapacity(preset: keyof typeof CAPACITY): TemplateCapacity {
@@ -147,6 +153,16 @@ export const TEMPLATES: TemplateDefinition[] = [
     renderer: "renderCauseAnalysis01",
   },
   {
+    templateId: "CA_02",
+    slideType: "CAUSE_ANALYSIS",
+    name: "三级因果链版",
+    description: "深层根因→表层原因→现象/结果 三级因果链，多因一果自动聚合，读取 causalChains 结构化字段",
+    version: "1.1.0",
+    capacity: makeCapacity("causeTree"),
+    layout: {},
+    renderer: "renderCauseAnalysis02",
+  },
+  {
     templateId: "PPM_01",
     slideType: "PAIN_POINT_MATRIX",
     name: "痛点矩阵版",
@@ -180,11 +196,21 @@ export const TEMPLATES: TemplateDefinition[] = [
     templateId: "JRN_01",
     slideType: "JOURNEY",
     name: "横向旅程图版",
-    description: "时间轴节点 + 阶段卡片，最多 5 阶段，每阶段含名称和描述",
-    version: "1.0.0",
+    description: "时间轴节点 + 阶段卡片，弹性 3-8 阶段，每阶段含行为/触点/情绪",
+    version: "1.1.0",
     capacity: makeCapacity("journey"),
     layout: {},
     renderer: "renderJourney01",
+  },
+  {
+    templateId: "JRN_02",
+    slideType: "JOURNEY",
+    name: "泳道式旅程图版",
+    description: "三泳道（行为/触点/情绪）+ 阶段标签，读取 journeyStages 结构化字段，适合多层级旅程",
+    version: "1.1.0",
+    capacity: makeCapacity("journeySwimlane"),
+    layout: {},
+    renderer: "renderJourney02",
   },
   {
     templateId: "AG_01",
@@ -215,6 +241,67 @@ export const TEMPLATES: TemplateDefinition[] = [
     capacity: makeCapacity("appendix"),
     layout: {},
     renderer: "renderAppendix01",
+  },
+  // ====== 第一阶段新增：结构化图形模板（让 visualType 真正生效）======
+  {
+    templateId: "PYR_01",
+    slideType: "PYRAMID_HIERARCHY",
+    name: "需求金字塔-居中版",
+    description: "金字塔图形居中铺满，适合需求/价值层级分析（最多4层）",
+    version: "1.1.0",
+    capacity: makeCapacity("pyramid"),
+    layout: {},
+    renderer: "renderPyramid01",
+  },
+  {
+    templateId: "PYR_02",
+    slideType: "PYRAMID_HIERARCHY",
+    name: "需求金字塔-带侧注版",
+    description: "图形居左 + 右侧层级说明/证据面板，适合需要补充子论点或证据的层级分析",
+    version: "1.1.0",
+    capacity: makeCapacity("pyramid"),
+    layout: {},
+    renderer: "renderPyramid01",
+  },
+  {
+    templateId: "DP_01",
+    slideType: "DECISION_PATH",
+    name: "购买决策路径-横向版",
+    description: "chevron 箭头从左到右铺满，适合购买决策/行为路径（最多6步）",
+    version: "1.1.0",
+    capacity: makeCapacity("decisionPath"),
+    layout: {},
+    renderer: "renderDecisionPath01",
+  },
+  {
+    templateId: "DP_02",
+    slideType: "DECISION_PATH",
+    name: "购买决策路径-带侧注版",
+    description: "图形居左 + 右侧每步要点/证据面板，适合需要标注各阶段细节的决策路径",
+    version: "1.1.0",
+    capacity: makeCapacity("decisionPath"),
+    layout: {},
+    renderer: "renderDecisionPath01",
+  },
+  {
+    templateId: "PH_01",
+    slideType: "PRODUCT_HOUSE",
+    name: "产品屋-居中版",
+    description: "屋顶（核心价值）+ 支柱 + 基座（基础保障）居中铺满，最多1屋顶3支柱1基座",
+    version: "1.1.0",
+    capacity: makeCapacity("productHouse"),
+    layout: {},
+    renderer: "renderProductHouse01",
+  },
+  {
+    templateId: "PH_02",
+    slideType: "PRODUCT_HOUSE",
+    name: "产品屋-带侧注版",
+    description: "图形居左 + 右侧支柱/基座说明面板，适合需要展开支撑逻辑的 product house",
+    version: "1.1.0",
+    capacity: makeCapacity("productHouse"),
+    layout: {},
+    renderer: "renderProductHouse01",
   },
 ];
 
@@ -250,4 +337,37 @@ export function listAllTemplates(): TemplateDefinition[] {
  */
 export function selectTemplate(slideType: SlideType, _contentLength = 0): TemplateDefinition | undefined {
   return getDefaultTemplate(slideType);
+}
+
+/**
+ * 根据完整 SlidePlan 内容选择最合适的模板（内容感知版）
+ *
+ * 用于生成器在 plan.templateId 为空时自动挑选 layout 变体：
+ * - JOURNEY：若 journeyStages 含行为/触点/情绪等多层信息 → 选 JRN_02 泳道式，否则 JRN_01
+ * - CAUSE_ANALYSIS：若 causalChains 存在 → 选 CA_02 三级因果链，否则 CA_01 双栏
+ * - 其他类型：返回默认模板
+ */
+export function selectTemplateForPlan(plan: SlidePlan): TemplateDefinition | undefined {
+  const list = getTemplatesByType(plan.slideType);
+  if (list.length === 0) return undefined;
+  if (list.length === 1) return list[0];
+
+  const content = (plan as SlidePlan).content || {};
+  switch (plan.slideType) {
+    case "JOURNEY": {
+      const stages = content.journeyStages || [];
+      const hasLanes = stages.some(
+        s => s.behavior || s.touchpoint || s.emotion || s.painPoint,
+      );
+      return hasLanes ? list.find(t => t.templateId === "JRN_02") || list[0] : list[0];
+    }
+    case "CAUSE_ANALYSIS": {
+      const chains = content.causalChains || [];
+      return chains.length > 0
+        ? list.find(t => t.templateId === "CA_02") || list[0]
+        : list[0];
+    }
+    default:
+      return list[0];
+  }
 }

@@ -23,13 +23,15 @@
  */
 import { chat, chatWithRetry, HttpError, errorResponse, successResponse, type Env } from "./lib/chat";
 import {
-  INSIGHT_SYSTEM_PROMPT, buildInsightUserPrompt,
+  INSIGHT_SYSTEM_PROMPT, BATCH_INSIGHT_SYSTEM_PROMPT, buildInsightUserPrompt,
   SLIDE_SYSTEM_PROMPT, buildSlideUserPrompt,
+  REPORT_OUTLINE_SYSTEM_PROMPT, SLIDE_BATCH_SYSTEM_PROMPT, buildSlideBatchUserPrompt,
   CORRECT_SYSTEM_PROMPT, ANALYZE_INTERVIEW_SYSTEM_PROMPT,
   ANALYZE_PROJECT_SYSTEM_PROMPT, CODE_BATCH_SYSTEM_PROMPT,
   ANALYZE_SUMMARY_SYSTEM_PROMPT, AUTO_ROLES_SYSTEM_PROMPT,
   SUGGEST_TAGS_SYSTEM_PROMPT, SUGGEST_DIMENSIONS_SYSTEM_PROMPT,
   TRANSCRIPT_REPORT_SYSTEM_PROMPT,
+  buildSummaryStyleSuffix, TEMPLATE_STRUCTURE_SYSTEM_PROMPT,
 } from "./lib/prompts";
 import { checkSlides } from "./lib/qa";
 
@@ -78,6 +80,60 @@ function errorJsonResponse(env: Env, requestOrigin: string | null, status: numbe
 // 鉴权
 // ====================================================================
 
+/**
+ * Keep long AI requests alive through Cloudflare's proxy by streaming JSON.
+ * Whitespace is valid before a JSON document, so existing response.json() callers remain compatible.
+ */
+function streamingJsonResponse(
+  env: Env,
+  requestOrigin: string | null,
+  task: () => Promise<unknown>,
+): Response {
+  const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+  const heartbeatChunk = encoder.encode(`${" ".repeat(1024)}\n`);
+  let finished = false;
+
+  const writeHeartbeat = () => {
+    if (finished) return;
+    void writer.write(heartbeatChunk).catch(() => {
+      finished = true;
+    });
+  };
+
+  // Start the response immediately, then keep data flowing below the proxy read timeout.
+  writeHeartbeat();
+  const heartbeat = setInterval(writeHeartbeat, 10_000);
+
+  void (async () => {
+    try {
+      const data = await task();
+      if (!finished) await writer.write(encoder.encode(JSON.stringify(data)));
+    } catch (error) {
+      const status = error instanceof HttpError ? error.status : 500;
+      const detail = error instanceof Error ? error.message : "Unknown streaming task error";
+      if (!finished) {
+        await writer.write(encoder.encode(JSON.stringify({ __streamError: true, status, detail })));
+      }
+    } finally {
+      finished = true;
+      clearInterval(heartbeat);
+      await writer.close().catch(() => undefined);
+    }
+  })();
+
+  return new Response(readable, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-cache, no-store, no-transform",
+      "Content-Encoding": "identity",
+      "X-Accel-Buffering": "no",
+      ...corsHeaders(env, requestOrigin),
+    },
+  });
+}
 function checkAuth(env: Env, request: Request): void {
   if (env.AUTH_ENABLED !== "true") return;
   const token = env.AI_PROXY_TOKEN;
@@ -216,7 +272,20 @@ export default {
       // ====== 维度小结 ======
       if (path === "/api/analyze/summary" && method === "POST") {
         const body = await parseJsonBody(request);
-        const result = await chat(env, ANALYZE_SUMMARY_SYSTEM_PROMPT, JSON.stringify(body), 0.2, userApiKey);
+        // 支持风格样例（第一个用户/第一组已写好的小结）-> 拼接到 system prompt
+        const styleSuffix = buildSummaryStyleSuffix(body?.styleExample);
+        const systemPrompt = ANALYZE_SUMMARY_SYSTEM_PROMPT + styleSuffix;
+        const result = await chat(env, systemPrompt, JSON.stringify(body), 0.2, userApiKey);
+        return jsonResponse(env, requestOrigin, {
+          data: result.data, usage: result.usage,
+          model: env.AI_MODEL || "deepseek-v4-flash",
+        });
+      }
+
+      // ====== Excel 小结模板结构识别 ======
+      if (path === "/api/analyze/template-structure" && method === "POST") {
+        const body = await parseJsonBody(request);
+        const result = await chat(env, TEMPLATE_STRUCTURE_SYSTEM_PROMPT, JSON.stringify({ grid: body?.gridText || "" }), 0.1, userApiKey);
         return jsonResponse(env, requestOrigin, {
           data: result.data, usage: result.usage,
           model: env.AI_MODEL || "deepseek-v4-flash",
@@ -256,49 +325,87 @@ export default {
       // ====== 快速报告（从笔录直接生成 Markdown 报告）======
       if (path === "/api/report/transcript" && method === "POST") {
         const body = await parseJsonBody(request);
-        const result = await chatWithRetry(
-          env, TRANSCRIPT_REPORT_SYSTEM_PROMPT, JSON.stringify(body), 0.3, 2,
-          ["title", "markdown"], userApiKey,
-        );
-        return jsonResponse(env, requestOrigin, {
-          data: result.data, usage: result.usage,
-          model: env.AI_MODEL || "deepseek-v4-flash",
+        return streamingJsonResponse(env, requestOrigin, async () => {
+          const result = await chatWithRetry(
+            env, TRANSCRIPT_REPORT_SYSTEM_PROMPT, JSON.stringify(body), 0.3, 1,
+            ["title", "markdown"], userApiKey,
+          );
+          return {
+            data: result.data, usage: result.usage,
+            model: env.AI_MODEL || "deepseek-v4-flash",
+          };
         });
       }
 
-      // ====== 专业版第一步：结构化洞察提取 ======
+      // Professional report step 1: extract insights with streaming keepalive.
       if (path === "/api/report/extract-insights" && method === "POST") {
         const body = await parseJsonBody(request);
         const transcripts = body.transcripts || [];
-        const projectContext = body.projectContext || {};
+        const projectContext = body.projectContext || body.project || {};
         const userPrompt = buildInsightUserPrompt(transcripts, projectContext);
-        const result = await chatWithRetry(
-          env, INSIGHT_SYSTEM_PROMPT, userPrompt, 0.2, 2,
-          ["researchContext", "topics", "findings"], userApiKey,
-        );
-        return jsonResponse(env, requestOrigin, {
-          data: result.data, usage: result.usage,
-          model: env.AI_MODEL || "deepseek-v4-flash",
+        return streamingJsonResponse(env, requestOrigin, async () => {
+          const result = await chatWithRetry(
+            env, BATCH_INSIGHT_SYSTEM_PROMPT, userPrompt, 0.1, 0,
+            ["researchContext", "topics", "findings"], userApiKey,
+            { enableThinking: false, maxTokens: 2200 },
+          );
+          return {
+            data: result.data, usage: result.usage,
+            model: env.AI_MODEL || "deepseek-v4-flash",
+          };
         });
       }
 
-      // ====== 专业版第二步：报告规划 ======
+      // Professional report step 2: aggregate findings and plan slides with streaming keepalive.
       if (path === "/api/report/plan-slides" && method === "POST") {
         const body = await parseJsonBody(request);
         const insightPack = body.insightPack || {};
         const options = body.options || {};
         const userPrompt = buildSlideUserPrompt(insightPack, options);
-        const result = await chatWithRetry(
-          env, SLIDE_SYSTEM_PROMPT, userPrompt, 0.25, 2,
-          ["storyline", "slides"], userApiKey,
-        );
-        return jsonResponse(env, requestOrigin, {
-          data: result.data, usage: result.usage,
-          model: env.AI_MODEL || "deepseek-v4-flash",
+        return streamingJsonResponse(env, requestOrigin, async () => {
+          const result = await chatWithRetry(
+            env, SLIDE_SYSTEM_PROMPT, userPrompt, 0.25, 1,
+            ["storyline", "slides"], userApiKey,
+            { enableThinking: false, maxTokens: 6000 },
+          );
+          return {
+            data: result.data, usage: result.usage,
+            model: env.AI_MODEL || "deepseek-v4-flash",
+          };
         });
       }
 
-      // ====== 专业版：单页重生成 ======
+      // Professional report step 2: compact research summary and report outline.
+      if (path === "/api/report/plan-outline" && method === "POST") {
+        const body = await parseJsonBody(request);
+        const insightPack = body.insightPack || {};
+        const options = body.options || {};
+        const userPrompt = buildSlideUserPrompt(insightPack, options);
+        return streamingJsonResponse(env, requestOrigin, async () => {
+          const result = await chatWithRetry(
+            env, REPORT_OUTLINE_SYSTEM_PROMPT, userPrompt, 0.2, 1,
+            ["storyline", "outline"], userApiKey,
+            { enableThinking: false, maxTokens: 4000 },
+          );
+          return { data: result.data, usage: result.usage, model: env.AI_MODEL || "qwen3.7-plus" };
+        });
+      }
+
+      // Professional report step 3: fill a small batch of outline pages.
+      if (path === "/api/report/generate-slide-batch" && method === "POST") {
+        const body = await parseJsonBody(request);
+        const userPrompt = buildSlideBatchUserPrompt(body.insightPack || {}, body.outline || []);
+        return streamingJsonResponse(env, requestOrigin, async () => {
+          const result = await chatWithRetry(
+            env, SLIDE_BATCH_SYSTEM_PROMPT, userPrompt, 0.2, 1,
+            ["slides"], userApiKey,
+            { enableThinking: false, maxTokens: 5000 },
+          );
+          return { data: result.data, usage: result.usage, model: env.AI_MODEL || "qwen3.7-plus" };
+        });
+      }
+
+      // Professional report: regenerate one slide.
       if (path === "/api/report/regenerate-slide" && method === "POST") {
         const body = await parseJsonBody(request);
         const insightPack = body.insightPack || {};

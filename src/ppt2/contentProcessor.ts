@@ -247,13 +247,19 @@ export function splitSlide(
   const visualItems = slide.content.visualItems || [];
   const leftCol = slide.content.leftColumn || [];
   const rightCol = slide.content.rightColumn || [];
+  const journeyStages = slide.content.journeyStages || [];
+  const matrixCells = slide.content.matrixCells || [];
+  const causalChains = slide.content.causalChains || [];
 
   // 判断是否需要拆页
   const needsSplit =
     (items.length > cap.maxItems && items.length >= 4) ||
     (recs.length > cap.maxItems && recs.length >= 4) ||
     (visualItems.length > cap.maxItems && visualItems.length >= 4) ||
-    (leftCol.length > cap.maxItems && leftCol.length >= 4);
+    (leftCol.length > cap.maxItems && leftCol.length >= 4) ||
+    (journeyStages.length > cap.maxItems && journeyStages.length >= 4) ||
+    (matrixCells.length > cap.maxItems && matrixCells.length >= 4) ||
+    (causalChains.length > cap.maxItems && causalChains.length >= 4);
 
   if (!needsSplit) {
     return { slides: [slide], split: false, reason: "" };
@@ -272,7 +278,16 @@ export function splitSlide(
 
     case "PAIN_POINT_MATRIX":
     case "OPPORTUNITY_MATRIX":
-      return splitByVisualItems(slide, visualItems, cap.maxItems);
+      // 优先按结构化 matrixCells 拆分；否则按 visualItems 回退
+      return matrixCells.length > 0
+        ? splitByMatrixCells(slide, matrixCells, cap.maxItems)
+        : splitByVisualItems(slide, visualItems, cap.maxItems);
+
+    case "JOURNEY":
+      return splitByJourneyStages(slide, journeyStages, cap.maxItems);
+
+    case "CAUSE_ANALYSIS":
+      return splitByCausalChains(slide, causalChains, cap.maxItems);
 
     case "TWO_COLUMN_COMPARE":
       return splitTwoColumnCompare(slide, leftCol, rightCol, cap.maxItems);
@@ -402,6 +417,114 @@ function splitByVisualItems(
     slides: [slide1, slide2],
     split: true,
     reason: `visualItems 超量（${visualItems.length} > ${maxItems}），对半拆分为两页`,
+  };
+}
+
+/**
+ * 按 matrixCells 对半拆分（结构化矩阵类）
+ */
+function splitByMatrixCells(
+  slide: SlidePlan,
+  cells: { title: string; description: string; severity: "high" | "medium" | "low"; priority: "high" | "medium" | "low" }[],
+  maxItems: number,
+): { slides: SlidePlan[]; split: boolean; reason: string } {
+  if (cells.length <= maxItems) {
+    return { slides: [slide], split: false, reason: "" };
+  }
+
+  const midPoint = Math.ceil(cells.length / 2);
+  const firstHalf = cells.slice(0, midPoint);
+  const secondHalf = cells.slice(midPoint);
+
+  const slide1: SlidePlan = {
+    ...slide,
+    slideId: generateSlideId(slide.slideId, "a"),
+    content: { ...slide.content, matrixCells: firstHalf, visualItems: [] },
+    subtitle: slide.subtitle ? `${slide.subtitle}（上）` : "（上）",
+  };
+  const slide2: SlidePlan = {
+    ...slide,
+    slideId: generateSlideId(slide.slideId, "b"),
+    content: { ...slide.content, matrixCells: secondHalf, visualItems: [] },
+    subtitle: slide.subtitle ? `${slide.subtitle}（下）` : "（下）",
+  };
+
+  return {
+    slides: [slide1, slide2],
+    split: true,
+    reason: `matrixCells 超量（${cells.length} > ${maxItems}），对半拆分为两页`,
+  };
+}
+
+/**
+ * 按 journeyStages 对半拆分（旅程类）
+ */
+function splitByJourneyStages(
+  slide: SlidePlan,
+  stages: { stage: string; behavior: string; touchpoint: string; emotion: string; painPoint: string }[],
+  maxItems: number,
+): { slides: SlidePlan[]; split: boolean; reason: string } {
+  if (stages.length <= maxItems) {
+    return { slides: [slide], split: false, reason: "" };
+  }
+
+  const midPoint = Math.ceil(stages.length / 2);
+  const firstHalf = stages.slice(0, midPoint);
+  const secondHalf = stages.slice(midPoint);
+
+  const slide1: SlidePlan = {
+    ...slide,
+    slideId: generateSlideId(slide.slideId, "a"),
+    content: { ...slide.content, journeyStages: firstHalf, visualItems: [] },
+    subtitle: slide.subtitle ? `${slide.subtitle}（上）` : "（上）",
+  };
+  const slide2: SlidePlan = {
+    ...slide,
+    slideId: generateSlideId(slide.slideId, "b"),
+    content: { ...slide.content, journeyStages: secondHalf, visualItems: [] },
+    subtitle: slide.subtitle ? `${slide.subtitle}（下）` : "（下）",
+  };
+
+  return {
+    slides: [slide1, slide2],
+    split: true,
+    reason: `journeyStages 超量（${stages.length} > ${maxItems}），对半拆分为两页`,
+  };
+}
+
+/**
+ * 按 causalChains 对半拆分（因果类）
+ */
+function splitByCausalChains(
+  slide: SlidePlan,
+  chains: { effect: string; surfaceCauses: string[]; rootCauses: string[] }[],
+  maxItems: number,
+): { slides: SlidePlan[]; split: boolean; reason: string } {
+  if (chains.length <= maxItems) {
+    return { slides: [slide], split: false, reason: "" };
+  }
+
+  const midPoint = Math.ceil(chains.length / 2);
+  const firstHalf = chains.slice(0, midPoint);
+  const secondHalf = chains.slice(midPoint);
+
+  const slide1: SlidePlan = {
+    ...slide,
+    slideId: generateSlideId(slide.slideId, "a"),
+    content: { ...slide.content, causalChains: firstHalf },
+    subtitle: slide.subtitle ? `${slide.subtitle}（上）` : "（上）",
+  };
+  const slide2: SlidePlan = {
+    ...slide,
+    slideId: generateSlideId(slide.slideId, "b"),
+    content: { ...slide.content, causalChains: secondHalf },
+    subtitle: slide.subtitle ? `${slide.subtitle}（下）` : "（下）",
+  };
+
+  return {
+    slides: [slide1, slide2],
+    split: true,
+    reason: `causalChains 超量（${chains.length} > ${maxItems}），对半拆分为两页`,
   };
 }
 

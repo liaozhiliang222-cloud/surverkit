@@ -1,4 +1,4 @@
-import { FormEvent, Suspense, lazy, useEffect, useMemo, useState } from "react";
+import { FormEvent, Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import {
   Link,
   NavLink,
@@ -14,6 +14,7 @@ import { db, now, resetDemoData, uid } from "./db";
 import { parseTranscript } from "./correction";
 const TranscriptWorkspace = lazy(() => import("./TranscriptWorkspace").then((module) => ({ default: module.TranscriptWorkspace })));
 const SummaryPage = lazy(() => import("./SummaryPage").then((module) => ({ default: module.SummaryPage })));
+const ExcelSummaryPage = lazy(() => import("./ExcelSummaryPage").then((module) => ({ default: module.ExcelSummaryPage })));
 const SettingsCenter = lazy(() => import("./SettingsCenter").then((module) => ({ default: module.SettingsCenter })));
 const QuickReportPage = lazy(() => import("./QuickReportPage"));
 import { exportResearchPptx } from "./p2Services";
@@ -21,6 +22,7 @@ import { analyzeProjectWithAi, generateReportWithAi, generateReportFromTranscrip
 import { contraryCases, evidenceStrength, tagCooccurrence } from "./researchAnalytics";
 import { useStore, startHealthPolling, stopHealthPolling } from "./store";
 import { ToastContainer } from "./Toast";
+import { PwaInstallButton } from "./components/PwaInstallButton";
 import type {
   Insight,
   Interview,
@@ -93,6 +95,7 @@ function App() {
           <Route path="/coding" element={<CodingHub />} />
           <Route path="/insights" element={<InsightsHub />} />
           <Route path="/summary" element={<Suspense fallback={<PageLoading />}><SummaryPage /></Suspense>} />
+          <Route path="/excel-summary" element={<Suspense fallback={<PageLoading />}><ExcelSummaryPage /></Suspense>} />
           <Route path="/knowledge" element={<KnowledgeSearchPage />} />
           <Route path="/projects/:projectId" element={<ProjectDetail />} />
           <Route path="/transcript/:interviewId" element={<TranscriptPage />} />
@@ -106,6 +109,7 @@ function App() {
         </Routes>
       </Shell>
       <ToastContainer />
+      <PwaInstallButton />
     </div>
   );
 }
@@ -143,6 +147,7 @@ function Shell({ children }: { children: React.ReactNode }) {
       label: "结果交付",
       items: [
         ["/quick-report", "快速报告", "quick-report"],
+        ["/excel-summary", "Excel小结", "excel"],
         ["/summary", "访谈小结", "summary"],
         ["/reports", "定性报告", "report"],
       ] as const,
@@ -390,6 +395,40 @@ function CorrectionHub() {
   );
   const projects = useLiveQuery(() => db.projects.toArray(), [], []);
   const [query, setQuery] = useState("");
+  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
+  const navigate = useNavigate();
+  const addToast = useStore((state) => state.addToast);
+
+  useEffect(() => {
+    if (!selectedProjectId && projects.length > 0) {
+      setSelectedProjectId(projects[0].id);
+    }
+  }, [projects, selectedProjectId]);
+
+  async function importTranscripts(files: FileList | null) {
+    if (!files?.length) return;
+    if (!selectedProjectId) {
+      addToast("请先选择笔录所属项目", "error");
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const { imported, failed } = await importTranscriptFiles(Array.from(files), selectedProjectId);
+
+      if (imported.length > 0) {
+        addToast(`已导入 ${imported.length} 份笔录${failed.length ? `，${failed.length} 份失败` : ""}`);
+        navigate(`/transcript/${imported[0]}/correction`);
+      } else {
+        addToast(`笔录导入失败${failed.length ? `：${failed.join("、")}` : ""}`, "error");
+      }
+    } finally {
+      setUploading(false);
+      if (uploadInputRef.current) uploadInputRef.current.value = "";
+    }
+  }
 
   const filtered = interviews.filter((item) =>
     `${item.title}${item.fileName || ""}${item.transcriptStatus}`
@@ -422,6 +461,47 @@ function CorrectionHub() {
             <p className="text-xs text-slate-500">{status}</p>
           </div>
         ))}
+      </div>
+
+      <div className="card p-5">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
+          <label className="min-w-0 flex-1">
+            <span className="label">笔录所属项目</span>
+            <select
+              className="input"
+              value={selectedProjectId}
+              onChange={(event) => setSelectedProjectId(event.target.value)}
+              disabled={uploading}
+            >
+              <option value="">请选择项目</option>
+              {projects.map((project) => (
+                <option key={project.id} value={project.id}>{project.name}</option>
+              ))}
+            </select>
+          </label>
+          <input
+            ref={uploadInputRef}
+            className="hidden"
+            type="file"
+            multiple
+            accept=".txt,.md,.docx,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            onChange={(event) => void importTranscripts(event.target.files)}
+          />
+          <button
+            className="btn-primary whitespace-nowrap"
+            type="button"
+            disabled={uploading || !selectedProjectId}
+            onClick={() => uploadInputRef.current?.click()}
+          >
+            {uploading ? "正在解析并导入..." : "上传笔录"}
+          </button>
+        </div>
+        <p className="mt-2 text-xs text-slate-500">
+          支持批量上传 TXT、MD、DOCX；导入后将自动拆分为可校正片段。暂不支持旧版 DOC。
+        </p>
+        {projects.length === 0 && (
+          <p className="mt-2 text-xs text-amber-700">暂无可选项目，请先在项目中心创建项目。</p>
+        )}
       </div>
 
       <div className="card p-4">
@@ -1016,6 +1096,27 @@ function ProjectDetail() {
     [projectId],
     [],
   );
+  const [uploading, setUploading] = useState(false);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
+  const navigate = useNavigate();
+  const addToast = useStore((state) => state.addToast);
+
+  async function uploadProjectTranscripts(files: FileList | null) {
+    if (!files?.length) return;
+    setUploading(true);
+    try {
+      const { imported, failed } = await importTranscriptFiles(Array.from(files), projectId);
+      if (imported.length > 0) {
+        addToast(`已向项目导入 ${imported.length} 份笔录${failed.length ? `，${failed.length} 份失败` : ""}`);
+        navigate(`/transcript/${imported[0]}/correction`);
+      } else {
+        addToast(`笔录导入失败${failed.length ? `：${failed.join("、")}` : ""}`, "error");
+      }
+    } finally {
+      setUploading(false);
+      if (uploadInputRef.current) uploadInputRef.current.value = "";
+    }
+  }
 
   const stages = useMemo(() => {
     const confirmed = interviews.filter((i) => i.transcriptStatus === "已确认").length;
@@ -1049,6 +1150,22 @@ function ProjectDetail() {
             <p className="mt-2 max-w-3xl text-slate-600">{project.objective}</p>
           </div>
           <div className="flex flex-wrap gap-2">
+            <input
+              ref={uploadInputRef}
+              className="hidden"
+              type="file"
+              multiple
+              accept=".txt,.md,.docx,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              onChange={(event) => void uploadProjectTranscripts(event.target.files)}
+            />
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={uploading}
+              onClick={() => uploadInputRef.current?.click()}
+            >
+              {uploading ? "正在导入..." : "上传笔录"}
+            </button>
             <Link to={`/insights/${project.id}`} className="btn-primary">
               洞察面板
             </Link>
@@ -1131,8 +1248,16 @@ function ProjectDetail() {
                 开始你的研究流程
               </h3>
               <p className="mt-1 text-sm text-slate-600">
-                按照以下步骤，把访谈资料转化为可引用的研究洞察：
+                先上传 TXT、MD 或 DOCX 笔录，再按照以下步骤把资料转化为可引用的研究洞察：
               </p>
+              <button
+                type="button"
+                className="btn-primary mt-4"
+                disabled={uploading}
+                onClick={() => uploadInputRef.current?.click()}
+              >
+                {uploading ? "正在解析并导入..." : "上传第一份笔录"}
+              </button>
               <div className="mt-4 grid gap-3">
                 <GuideStep
                   step={1}
@@ -2607,6 +2732,56 @@ ${respondentTable}
 ---
 
 *\u672C\u62A5\u544A\u7531 ResearchBox \u672C\u5730\u6570\u636E\u81EA\u52A8\u751F\u6210\uFF0C\u878D\u5408\u4E86\u4E3B\u9898\u5206\u6790\u6CD5\u65B9\u6CD5\u8BBA\u3002\u5EFA\u8BAE\u4F7F\u7528\u201CAI \u751F\u6210\u62A5\u544A\u201D\u529F\u80FD\u83B7\u53D6\u66F4\u6DF1\u5EA6\u7684\u5206\u6790\u5185\u5BB9\u3002*`;
+}
+
+async function importTranscriptFiles(
+  files: File[],
+  projectId: string,
+): Promise<{ imported: string[]; failed: string[] }> {
+  const imported: string[] = [];
+  const failed: string[] = [];
+  for (const file of files) {
+    try {
+      let content = "";
+      const isDocx = /\.docx$/i.test(file.name);
+      if (isDocx) {
+        const mammoth = await import("mammoth");
+        const result = await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() });
+        content = result.value;
+      } else if (/\.(txt|md)$/i.test(file.name) || file.type.startsWith("text/")) {
+        content = await file.text();
+      } else {
+        throw new Error("仅支持 TXT、MD、DOCX");
+      }
+      if (!content.trim()) throw new Error("文件中没有可解析的文字");
+
+      const interviewId = uid("interview");
+      const timestamp = now();
+      const interview: Interview = {
+        id: interviewId,
+        projectId,
+        title: file.name.replace(/\.(txt|md|docx)$/i, ""),
+        sourceType: isDocx ? "DOCX" : "文本",
+        fileName: file.name,
+        transcriptStatus: "待校正",
+        analysisStatus: "未分析",
+        transcriptVersion: 1,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      const segments = createSegmentsFromText(interviewId, content);
+      if (segments.length === 0) throw new Error("未识别到有效笔录段落");
+
+      await db.transaction("rw", db.interviews, db.segments, async () => {
+        await db.interviews.add(interview);
+        await db.segments.bulkAdd(segments);
+      });
+      imported.push(interviewId);
+    } catch {
+      failed.push(file.name);
+    }
+  }
+  return { imported, failed };
 }
 
 function createSegmentsFromText(

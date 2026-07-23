@@ -126,85 +126,129 @@ export function renderCauseAnalysis01(pptx: any, slide: any, plan: SlidePlan, ct
 }
 
 // ====================================================================
-// PPM_01: 痛点矩阵版
-// 2x2 或 2x3 矩阵布局，每个格子是一个痛点卡片
-// 使用 visualItems 承载"标题：描述"格式的痛点
+// 矩阵辅助：解析单元格数据（支持结构化 matrixCells 或字符串回退）
 // ====================================================================
-export function renderPainPointMatrix01(pptx: any, slide: any, plan: SlidePlan, ctx?: Partial<RenderContext>): void {
-  const c = makeCtx(pptx, slide, ctx?.pageNumber, ctx?.totalPages);
-  const ds = designSystem;
+interface MatrixCellData {
+  title: string;
+  desc: string;
+  level: "high" | "medium" | "low";
+  levelLabel: string;
+}
 
-  addPageTitle(c, plan.title, plan.chapterLabel || "PAIN POINTS");
-  if (plan.subtitle) addCoreMessage(c, plan.subtitle, 1.4);
-
-  const painPoints = plan.content.visualItems || plan.content.items || [];
-  if (painPoints.length === 0) {
-    addFooter(c);
-    addPageNumber(c);
-    return;
+function resolveMatrixCells(plan: SlidePlan): MatrixCellData[] {
+  const cells = plan.content.matrixCells || [];
+  if (cells.length > 0) {
+    return cells.map(c => ({
+      title: c.title,
+      desc: c.description || "",
+      level: (c.severity || c.priority || "medium") as "high" | "medium" | "low",
+      levelLabel: "",
+    }));
   }
-
-  // 矩阵布局：最多 6 个痛点，2 列 x 3 行
-  const maxItems = 6;
-  const items = painPoints.slice(0, maxItems);
-  const cols = 2;
-  const rows = Math.ceil(items.length / cols);
-
-  const startY = plan.subtitle ? 2.2 : 1.95;
-  const totalW = 11.93;
-  const gap = 0.3;
-  const cardW = (totalW - gap * (cols - 1)) / cols;
-  const cardH = Math.min(1.4, (6.5 - startY - 0.3) / rows - 0.15);
-
-  items.forEach((item, idx) => {
-    const col = idx % cols;
-    const row = Math.floor(idx / cols);
-    const x = 0.7 + col * (cardW + gap);
-    const y = startY + row * (cardH + 0.15);
-
-    // 解析"标题：描述"
+  // 回退：解析 "标题：描述" 字符串（最多 9 格，支持 2×2 / 2×3 / 3×3）
+  const raw = plan.content.visualItems || plan.content.items || [];
+  return raw.slice(0, 9).map(item => {
     const cnColon = item.indexOf("：");
     const enColon = item.indexOf(":");
     const colonIdx = cnColon >= 0 ? cnColon : enColon;
     const title = colonIdx > 0 ? item.slice(0, colonIdx).trim() : item.slice(0, 25);
     const desc = colonIdx > 0 ? item.slice(colonIdx + 1).trim() : "";
+    return { title, desc, level: "medium" as const, levelLabel: "" };
+  });
+}
 
-    // 卡片背景（警告色边框）
+/** 根据单元格数确定弹性网格：4→2×2，6→3×2，9→3×3，其余就近 */
+function computeGrid(n: number): { cols: number; rows: number } {
+  if (n <= 4) return { cols: 2, rows: Math.ceil(n / 2) };
+  if (n <= 6) return { cols: 3, rows: Math.ceil(n / 3) };
+  return { cols: 3, rows: Math.ceil(n / 3) };
+}
+
+/**
+ * 渲染矩阵（痛点/机会共用）
+ * @param tone "pain" 用警告橙红 + 严重度；"opp" 用正向绿 + 优先级
+ */
+function renderMatrixGrid(
+  pptx: any, slide: any, plan: SlidePlan,
+  tone: "pain" | "opp",
+  c: ReturnType<typeof makeCtx>,
+  ds: typeof designSystem,
+): void {
+  const cells = resolveMatrixCells(plan);
+  if (cells.length === 0) {
+    addFooter(c);
+    addPageNumber(c);
+    return;
+  }
+
+  const { cols, rows } = computeGrid(cells.length);
+  const startY = plan.subtitle ? 2.2 : 1.95;
+  const totalW = 11.93;
+  const gap = 0.3;
+  const cardW = (totalW - gap * (cols - 1)) / cols;
+  const cardH = Math.min(2.4, (6.6 - startY - 0.3) / rows - 0.15);
+
+  // 严重度/优先级 → 颜色与文案
+  const toneColor =
+    tone === "pain" ? ds.colors.warning : ds.colors.positive;
+  const bgColor = tone === "pain" ? "FFF7ED" : "F0FDF4";
+  const levelColor: Record<string, string> = tone === "pain"
+    ? { high: ds.colors.negative, medium: ds.colors.warning, low: ds.colors.lightText }
+    : { high: ds.colors.positive, medium: ds.colors.info, low: ds.colors.lightText };
+  const levelText: Record<string, string> = tone === "pain"
+    ? { high: "严重", medium: "中等", low: "轻微" }
+    : { high: "高优先", medium: "中优先", low: "低优先" };
+
+  cells.forEach((cell, idx) => {
+    const col = idx % cols;
+    const row = Math.floor(idx / cols);
+    const x = 0.7 + col * (cardW + gap);
+    const y = startY + row * (cardH + 0.15);
+    const lvl = cell.level || "medium";
+
+    // 卡片背景
     slide.addShape(pptx.ShapeType.roundRect, {
       x, y, w: cardW, h: cardH, rectRadius: 0.06,
-      fill: { color: "FFF7ED" }, // 浅橙色背景
-      line: { color: ds.colors.warning, width: 0.75 },
+      fill: { color: bgColor },
+      line: { color: toneColor, width: 0.75 },
     });
 
-    // 左侧色条
+    // 顶部色条（按严重度/优先级变色）
     slide.addShape(pptx.ShapeType.rect, {
-      x, y, w: 0.08, h: cardH,
-      fill: { color: ds.colors.warning }, line: { color: ds.colors.warning },
+      x, y, w: cardW, h: 0.08,
+      fill: { color: levelColor[lvl] }, line: { color: levelColor[lvl] },
     });
 
-    // 痛点编号 + 警示图标
+    // 编号徽章
     slide.addShape(pptx.ShapeType.ellipse, {
-      x: x + 0.2, y: y + 0.18, w: 0.35, h: 0.35,
-      fill: { color: ds.colors.warning }, line: { color: ds.colors.warning },
+      x: x + 0.2, y: y + 0.22, w: 0.35, h: 0.35,
+      fill: { color: toneColor }, line: { color: toneColor },
     });
-    slide.addText("!", {
-      x: x + 0.2, y: y + 0.18, w: 0.35, h: 0.35,
-      fontSize: ds.font.size.headline, bold: true,
+    slide.addText(tone === "pain" ? "!" : String(idx + 1), {
+      x: x + 0.2, y: y + 0.22, w: 0.35, h: 0.35,
+      fontSize: ds.font.size.subhead, bold: true,
       color: ds.colors.white, align: "center", valign: "middle", margin: 0,
     });
 
     // 标题
-    slide.addText(title, {
-      x: x + 0.7, y: y + 0.12, w: cardW - 0.85, h: 0.35,
+    slide.addText(cell.title, {
+      x: x + 0.7, y: y + 0.14, w: cardW - 1.5, h: 0.5,
       fontSize: ds.font.size.subhead, bold: true,
       color: ds.colors.text, fontFace: ds.font.family,
-      align: "left", valign: "middle", margin: 0,
+      align: "left", valign: "middle", margin: 0, lineSpacingMultiple: 1.0,
+    });
+
+    // 严重度/优先级标签（右上角）
+    slide.addText(levelText[lvl], {
+      x: x + cardW - 0.95, y: y + 0.18, w: 0.8, h: 0.3,
+      fontSize: 9, bold: true, color: levelColor[lvl],
+      fontFace: ds.font.family, align: "right", valign: "middle", margin: 0,
     });
 
     // 描述
-    if (desc) {
-      slide.addText(desc, {
-        x: x + 0.7, y: y + 0.5, w: cardW - 0.85, h: cardH - 0.6,
+    if (cell.desc) {
+      slide.addText(cell.desc, {
+        x: x + 0.25, y: y + 0.72, w: cardW - 0.5, h: cardH - 0.85,
         fontSize: ds.font.size.body, color: ds.colors.secondaryText,
         fontFace: ds.font.family,
         align: "left", valign: "top", margin: 0, lineSpacingMultiple: 1.25,
@@ -217,8 +261,118 @@ export function renderPainPointMatrix01(pptx: any, slide: any, plan: SlidePlan, 
 }
 
 // ====================================================================
-// OM_01: 机会矩阵版
-// 结构同痛点矩阵，但使用正向绿色配色
+// CA_02: 因果链版（现象→表层原因→深层根因 三级 + 多因一果聚合）
+// 读取 causalChains 结构化字段；同 effect 的多条链自动聚合为"多因一果"
+// 无 causalChains 时回退到 CA_01 双栏版
+// ====================================================================
+export function renderCauseAnalysis02(pptx: any, slide: any, plan: SlidePlan, ctx?: Partial<RenderContext>): void {
+  const c = makeCtx(pptx, slide, ctx?.pageNumber, ctx?.totalPages);
+  const ds = designSystem;
+
+  addPageTitle(c, plan.title, plan.chapterLabel || "ROOT CAUSE");
+  if (plan.coreMessage) addCoreMessage(c, plan.coreMessage, 1.4);
+
+  const chains = plan.content.causalChains || [];
+  if (chains.length === 0) {
+    // 回退：双栏现象→根因
+    renderCauseAnalysis01(pptx, slide, plan, ctx);
+    return;
+  }
+
+  // 多因一果：按 effect 聚合表层原因与深层根因
+  const byEffect = new Map<string, { surface: string[]; root: string[] }>();
+  for (const ch of chains) {
+    const key = ch.effect || "（未命名现象）";
+    const agg = byEffect.get(key) || { surface: [], root: [] };
+    agg.surface.push(...(ch.surfaceCauses || []));
+    agg.root.push(...(ch.rootCauses || []));
+    byEffect.set(key, agg);
+  }
+  const effects = Array.from(byEffect.entries());
+
+  const startY = plan.coreMessage ? 2.2 : 1.95;
+  const blockGap = 0.25;
+  const blockH = Math.min(3.6, (6.7 - startY - 0.2) / effects.length - blockGap);
+
+  // 三列布局：左=深层根因，中=表层原因，右=现象/结果
+  const rootX = 0.7;
+  const rootW = 3.5;
+  const surfaceX = 4.55;
+  const surfaceW = 3.5;
+  const effectX = 8.4;
+  const effectW = 4.2;
+  const arrowGap = 0.3;
+
+  effects.forEach(([effect, agg], ci) => {
+    const by = startY + ci * (blockH + blockGap);
+
+    // 列卡片绘制函数
+    const drawCol = (x: number, w: number, header: string, headerColor: string, items: string[]) => {
+      slide.addShape(pptx.ShapeType.roundRect, {
+        x, y: by, w, h: blockH, rectRadius: 0.06,
+        fill: { color: ds.colors.softBackground },
+        line: { color: headerColor, width: 0.75 },
+      });
+      slide.addShape(pptx.ShapeType.rect, {
+        x, y: by, w, h: 0.45,
+        fill: { color: headerColor }, line: { color: headerColor },
+      });
+      slide.addText(header, {
+        x: x + 0.15, y: by, w: w - 0.3, h: 0.45,
+        fontSize: ds.font.size.subhead, bold: true,
+        color: ds.colors.white, align: "left", valign: "middle", margin: 0,
+      });
+      const list = items.slice(0, 5);
+      list.forEach((it, ii) => {
+        const iy = by + 0.6 + ii * ((blockH - 0.6) / Math.max(list.length, 1));
+        slide.addShape(pptx.ShapeType.ellipse, {
+          x: x + 0.2, y: iy + 0.1, w: 0.09, h: 0.09,
+          fill: { color: headerColor }, line: { color: headerColor },
+        });
+        slide.addText(it, {
+          x: x + 0.42, y: iy, w: w - 0.6, h: (blockH - 0.6) / Math.max(list.length, 1) - 0.05,
+          fontSize: ds.font.size.body, color: ds.colors.text,
+          fontFace: ds.font.family, align: "left", valign: "top", margin: 0,
+          lineSpacingMultiple: 1.2,
+        });
+      });
+    };
+
+    drawCol(rootX, rootW, "深层根因", ds.colors.accent, agg.root);
+    drawCol(surfaceX, surfaceW, "表层原因", ds.colors.warning, agg.surface);
+    drawCol(effectX, effectW, "现象 / 结果", ds.colors.negative, [effect]);
+
+    // 箭头：深层→表层，表层→现象
+    const arrowY = by + blockH / 2 - 0.12;
+    const drawArrow = (fromX: number, toX: number) => {
+      slide.addShape(pptx.ShapeType.chevron, {
+        x: fromX, y: arrowY, w: toX - fromX, h: 0.24,
+        fill: { color: ds.colors.border }, line: { color: ds.colors.border },
+      });
+    };
+    drawArrow(rootX + rootW, surfaceX - arrowGap + arrowGap);
+    drawArrow(surfaceX + surfaceW, effectX - arrowGap + arrowGap);
+  });
+
+  addFooter(c);
+  addPageNumber(c);
+}
+
+// ====================================================================
+// PPM_01: 痛点矩阵版（弹性 2×2 / 2×3 / 3×3，支持结构化单元格 + 严重度）
+// ====================================================================
+export function renderPainPointMatrix01(pptx: any, slide: any, plan: SlidePlan, ctx?: Partial<RenderContext>): void {
+  const c = makeCtx(pptx, slide, ctx?.pageNumber, ctx?.totalPages);
+  const ds = designSystem;
+
+  addPageTitle(c, plan.title, plan.chapterLabel || "PAIN POINTS");
+  if (plan.subtitle) addCoreMessage(c, plan.subtitle, 1.4);
+
+  renderMatrixGrid(pptx, slide, plan, "pain", c, ds);
+}
+
+// ====================================================================
+// OM_01: 机会矩阵版（弹性 2×2 / 2×3 / 3×3，支持结构化单元格 + 优先级）
 // ====================================================================
 export function renderOpportunityMatrix01(pptx: any, slide: any, plan: SlidePlan, ctx?: Partial<RenderContext>): void {
   const c = makeCtx(pptx, slide, ctx?.pageNumber, ctx?.totalPages);
@@ -227,80 +381,7 @@ export function renderOpportunityMatrix01(pptx: any, slide: any, plan: SlidePlan
   addPageTitle(c, plan.title, plan.chapterLabel || "OPPORTUNITIES");
   if (plan.subtitle) addCoreMessage(c, plan.subtitle, 1.4);
 
-  const opportunities = plan.content.visualItems || plan.content.items || [];
-  if (opportunities.length === 0) {
-    addFooter(c);
-    addPageNumber(c);
-    return;
-  }
-
-  const maxItems = 6;
-  const items = opportunities.slice(0, maxItems);
-  const cols = 2;
-  const rows = Math.ceil(items.length / cols);
-
-  const startY = plan.subtitle ? 2.2 : 1.95;
-  const totalW = 11.93;
-  const gap = 0.3;
-  const cardW = (totalW - gap * (cols - 1)) / cols;
-  const cardH = Math.min(1.4, (6.5 - startY - 0.3) / rows - 0.15);
-
-  items.forEach((item, idx) => {
-    const col = idx % cols;
-    const row = Math.floor(idx / cols);
-    const x = 0.7 + col * (cardW + gap);
-    const y = startY + row * (cardH + 0.15);
-
-    const cnColon = item.indexOf("：");
-    const enColon = item.indexOf(":");
-    const colonIdx = cnColon >= 0 ? cnColon : enColon;
-    const title = colonIdx > 0 ? item.slice(0, colonIdx).trim() : item.slice(0, 25);
-    const desc = colonIdx > 0 ? item.slice(colonIdx + 1).trim() : "";
-
-    // 卡片背景（浅绿色）
-    slide.addShape(pptx.ShapeType.roundRect, {
-      x, y, w: cardW, h: cardH, rectRadius: 0.06,
-      fill: { color: "F0FDF4" }, // 浅绿色背景
-      line: { color: ds.colors.positive, width: 0.75 },
-    });
-
-    // 左侧色条
-    slide.addShape(pptx.ShapeType.rect, {
-      x, y, w: 0.08, h: cardH,
-      fill: { color: ds.colors.positive }, line: { color: ds.colors.positive },
-    });
-
-    // 机会编号 + 星标
-    slide.addShape(pptx.ShapeType.ellipse, {
-      x: x + 0.2, y: y + 0.18, w: 0.35, h: 0.35,
-      fill: { color: ds.colors.positive }, line: { color: ds.colors.positive },
-    });
-    slide.addText(String(idx + 1), {
-      x: x + 0.2, y: y + 0.18, w: 0.35, h: 0.35,
-      fontSize: ds.font.size.subhead, bold: true,
-      color: ds.colors.white, align: "center", valign: "middle", margin: 0,
-    });
-
-    // 标题
-    slide.addText(title, {
-      x: x + 0.7, y: y + 0.12, w: cardW - 0.85, h: 0.35,
-      fontSize: ds.font.size.subhead, bold: true,
-      color: ds.colors.text, fontFace: ds.font.family,
-      align: "left", valign: "middle", margin: 0,
-    });
-
-    if (desc) {
-      slide.addText(desc, {
-        x: x + 0.7, y: y + 0.5, w: cardW - 0.85, h: cardH - 0.6,
-        fontSize: ds.font.size.body, color: ds.colors.secondaryText,
-        fontFace: ds.font.family,
-        align: "left", valign: "top", margin: 0, lineSpacingMultiple: 1.25,
-      });
-    }
-  });
-
-  addFooter(c);
-  addPageNumber(c);
+  renderMatrixGrid(pptx, slide, plan, "opp", c, ds);
 }
 
 // ====================================================================
@@ -395,9 +476,50 @@ export function renderProcess01(pptx: any, slide: any, plan: SlidePlan, ctx?: Pa
 }
 
 // ====================================================================
-// JRN_01: 旅程图版
-// 横向阶段时间轴，每个阶段含阶段名、感受、关键触点
-// 使用 visualItems 承载"阶段名：描述"，items 承载触点列表
+// JOURNEY 辅助：解析阶段数据
+// 优先使用结构化 journeyStages；否则从 visualItems/items 解析"阶段名：描述"
+// ====================================================================
+interface JourneyStageData {
+  stage: string;
+  behavior: string;
+  touchpoint: string;
+  emotion: string;
+  painPoint: string;
+}
+
+function resolveJourneyStages(plan: SlidePlan): JourneyStageData[] {
+  const structured = plan.content.journeyStages || [];
+  if (structured.length > 0) {
+    return structured.map(s => ({
+      stage: s.stage || "",
+      behavior: s.behavior || "",
+      touchpoint: s.touchpoint || "",
+      emotion: s.emotion || "",
+      painPoint: s.painPoint || "",
+    }));
+  }
+  // 回退：解析字符串列表。支持 "阶段名：行为|触点|情绪" 富格式
+  const raw = plan.content.visualItems || plan.content.items || [];
+  return raw.slice(0, 8).map(item => {
+    const cnColon = item.indexOf("：");
+    const enColon = item.indexOf(":");
+    const colonIdx = cnColon >= 0 ? cnColon : enColon;
+    const stage = colonIdx > 0 ? item.slice(0, colonIdx).trim() : item.slice(0, 15);
+    const rest = colonIdx > 0 ? item.slice(colonIdx + 1).trim() : "";
+    const parts = rest.split(/[|｜]/).map(p => p.trim());
+    return {
+      stage,
+      behavior: "",
+      touchpoint: parts[0] || rest,
+      emotion: parts[1] || "",
+      painPoint: parts[2] || "",
+    };
+  });
+}
+
+// ====================================================================
+// JRN_01: 旅程图版（弹性 3-8 阶段横向时间轴）
+// 每个阶段含阶段名 + 阶段描述卡片，阶段数自适应宽度
 // ====================================================================
 export function renderJourney01(pptx: any, slide: any, plan: SlidePlan, ctx?: Partial<RenderContext>): void {
   const c = makeCtx(pptx, slide, ctx?.pageNumber, ctx?.totalPages);
@@ -406,17 +528,14 @@ export function renderJourney01(pptx: any, slide: any, plan: SlidePlan, ctx?: Pa
   addPageTitle(c, plan.title, plan.chapterLabel || "JOURNEY");
   if (plan.coreMessage) addCoreMessage(c, plan.coreMessage, 1.4);
 
-  const stages = plan.content.visualItems || plan.content.items || [];
+  const stages = resolveJourneyStages(plan);
   if (stages.length === 0) {
     addFooter(c);
     addPageNumber(c);
     return;
   }
 
-  const maxStages = 5;
-  const items = stages.slice(0, maxStages);
-  const stageCount = items.length;
-
+  const stageCount = Math.min(stages.length, 8); // 弹性上限 8 阶段
   const startY = plan.coreMessage ? 2.3 : 2.0;
   const totalW = 11.93;
   const stageW = totalW / stageCount;
@@ -428,16 +547,14 @@ export function renderJourney01(pptx: any, slide: any, plan: SlidePlan, ctx?: Pa
     fill: { color: ds.colors.border }, line: { color: ds.colors.border },
   });
 
-  items.forEach((item, idx) => {
+  // 阶段数越多字号越小（弹性）
+  const stageNameSize = stageCount > 6 ? ds.font.size.caption : ds.font.size.subhead;
+  const descSize = stageCount > 6 ? 9 : ds.font.size.caption;
+
+  for (let idx = 0; idx < stageCount; idx++) {
+    const item = stages[idx];
     const x = 0.7 + idx * stageW;
     const centerX = x + stageW / 2;
-
-    // 解析阶段
-    const cnColon = item.indexOf("：");
-    const enColon = item.indexOf(":");
-    const colonIdx = cnColon >= 0 ? cnColon : enColon;
-    const stageName = colonIdx > 0 ? item.slice(0, colonIdx).trim() : item.slice(0, 15);
-    const desc = colonIdx > 0 ? item.slice(colonIdx + 1).trim() : "";
 
     // 阶段节点（圆圈）
     const nodeR = 0.22;
@@ -452,9 +569,9 @@ export function renderJourney01(pptx: any, slide: any, plan: SlidePlan, ctx?: Pa
     });
 
     // 阶段名（节点上方）
-    slide.addText(stageName, {
-      x: x + 0.1, y: startY, w: stageW - 0.2, h: 0.4,
-      fontSize: ds.font.size.subhead, bold: true,
+    slide.addText(item.stage, {
+      x: x + 0.08, y: startY, w: stageW - 0.16, h: 0.4,
+      fontSize: stageNameSize, bold: true,
       color: ds.colors.text, fontFace: ds.font.family,
       align: "center", valign: "bottom", margin: 0,
     });
@@ -463,20 +580,127 @@ export function renderJourney01(pptx: any, slide: any, plan: SlidePlan, ctx?: Pa
     const cardY = timelineY + 0.6;
     const cardH = 3.2;
     slide.addShape(pptx.ShapeType.roundRect, {
-      x: x + 0.15, y: cardY, w: stageW - 0.3, h: cardH, rectRadius: 0.06,
+      x: x + 0.12, y: cardY, w: stageW - 0.24, h: cardH, rectRadius: 0.06,
       fill: { color: ds.colors.softBackground },
       line: { color: ds.colors.lightBorder, width: 0.5 },
     });
 
-    if (desc) {
-      slide.addText(desc, {
-        x: x + 0.3, y: cardY + 0.2, w: stageW - 0.6, h: cardH - 0.4,
-        fontSize: ds.font.size.caption, color: ds.colors.secondaryText,
-        fontFace: ds.font.family,
-        align: "left", valign: "top", margin: 0, lineSpacingMultiple: 1.35,
+    // 卡片内容：行为 / 触点 / 情绪（优先结构化字段）
+    const lines: Array<{ label: string; text: string; color: string }> = [];
+    const touch = item.touchpoint || item.behavior;
+    if (touch) lines.push({ label: "行为/触点", text: touch, color: ds.colors.text });
+    if (item.emotion) lines.push({ label: "情绪", text: item.emotion, color: ds.colors.accent });
+    if (item.painPoint) lines.push({ label: "痛点", text: item.painPoint, color: ds.colors.warning });
+
+    if (lines.length > 0) {
+      const lineH = (cardH - 0.3) / lines.length;
+      lines.forEach((ln, li) => {
+        const ly = cardY + 0.15 + li * lineH;
+        slide.addText(ln.label, {
+          x: x + 0.27, y: ly, w: stageW - 0.42, h: 0.22,
+          fontSize: 9, bold: true, color: ds.colors.secondaryText,
+          fontFace: ds.font.family, align: "left", valign: "middle", margin: 0,
+        });
+        slide.addText(ln.text, {
+          x: x + 0.27, y: ly + 0.22, w: stageW - 0.42, h: lineH - 0.28,
+          fontSize: descSize, color: ln.color,
+          fontFace: ds.font.family, align: "left", valign: "top", margin: 0,
+          lineSpacingMultiple: 1.2,
+        });
       });
     }
+  }
+
+  addFooter(c);
+  addPageNumber(c);
+}
+
+// ====================================================================
+// JRN_02: 旅程图-泳道式
+// 三泳道：上=行为 / 中=触点 / 下=情绪曲线；读取 journeyStages 结构化字段
+// ====================================================================
+export function renderJourney02(pptx: any, slide: any, plan: SlidePlan, ctx?: Partial<RenderContext>): void {
+  const c = makeCtx(pptx, slide, ctx?.pageNumber, ctx?.totalPages);
+  const ds = designSystem;
+
+  addPageTitle(c, plan.title, plan.chapterLabel || "JOURNEY");
+  if (plan.coreMessage) addCoreMessage(c, plan.coreMessage, 1.4);
+
+  const stages = resolveJourneyStages(plan);
+  if (stages.length === 0) {
+    addFooter(c);
+    addPageNumber(c);
+    return;
+  }
+
+  const stageCount = Math.min(stages.length, 8);
+  const startY = plan.coreMessage ? 2.2 : 1.95;
+  const totalW = 11.93;
+  const laneX = 2.1;          // 泳道内容起始 X（左侧留给泳道标签）
+  const laneW = totalW - laneX + 0.7; // 实际泳道宽度
+  const stageW = laneW / stageCount;
+
+  // 泳道定义
+  const lanes = [
+    { label: "行为", color: ds.colors.accent, field: "behavior" as const },
+    { label: "触点", color: ds.colors.info, field: "touchpoint" as const },
+    { label: "情绪", color: ds.colors.positive, field: "emotion" as const },
+  ];
+  const laneH = 1.35;
+  const laneGap = 0.18;
+  const lanesTop = startY + 0.15;
+
+  lanes.forEach((lane, li) => {
+    const ly = lanesTop + li * (laneH + laneGap);
+    // 泳道标签
+    slide.addShape(pptx.ShapeType.roundRect, {
+      x: 0.7, y: ly + 0.1, w: 1.25, h: laneH - 0.2, rectRadius: 0.06,
+      fill: { color: lane.color }, line: { color: lane.color },
+    });
+    slide.addText(lane.label, {
+      x: 0.7, y: ly + 0.1, w: 1.25, h: laneH - 0.2,
+      fontSize: ds.font.size.subhead, bold: true,
+      color: ds.colors.white, fontFace: ds.font.family,
+      align: "center", valign: "middle", margin: 0,
+    });
+
+    // 泳道底框
+    slide.addShape(pptx.ShapeType.roundRect, {
+      x: laneX, y: ly, w: laneW, h: laneH, rectRadius: 0.06,
+      fill: { color: ds.colors.softBackground },
+      line: { color: ds.colors.lightBorder, width: 0.5 },
+    });
+
+    for (let idx = 0; idx < stageCount; idx++) {
+      const x = laneX + idx * stageW;
+      const text = stages[idx][lane.field] || "";
+      slide.addText(text, {
+        x: x + 0.1, y: ly + 0.1, w: stageW - 0.2, h: laneH - 0.2,
+        fontSize: ds.font.size.caption, color: ds.colors.text,
+        fontFace: ds.font.family, align: "center", valign: "middle", margin: 0,
+        lineSpacingMultiple: 1.2,
+      });
+      // 阶段分隔线
+      if (idx > 0) {
+        slide.addShape(pptx.ShapeType.rect, {
+          x: x, y: ly + 0.15, w: 0.012, h: laneH - 0.3,
+          fill: { color: ds.colors.lightBorder }, line: { color: ds.colors.lightBorder },
+        });
+      }
+    }
   });
+
+  // 阶段标签行（最下方）
+  const stageLabelY = lanesTop + lanes.length * (laneH + laneGap) + 0.05;
+  for (let idx = 0; idx < stageCount; idx++) {
+    const x = laneX + idx * stageW;
+    slide.addText(`${idx + 1}. ${stages[idx].stage}`, {
+      x: x + 0.1, y: stageLabelY, w: stageW - 0.2, h: 0.35,
+      fontSize: ds.font.size.caption, bold: true, color: ds.colors.secondaryText,
+      fontFace: ds.font.family, align: "center", valign: "middle", margin: 0,
+      lineSpacingMultiple: 1.0,
+    });
+  }
 
   addFooter(c);
   addPageNumber(c);

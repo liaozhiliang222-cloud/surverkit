@@ -41,13 +41,16 @@ export default function QuickReportPage() {
     proStage,
     proError,
     proStartedAt,
+    proProgress,
     proInsightPack,
     proStoryline,
+    proOutline,
     proSlides,
     proOptions,
     setProMode,
     updateProOptions,
     startProReport,
+    generateProSlides,
     resetProReport,
     // 第四阶段：预览与质检
     thumbnails,
@@ -81,6 +84,11 @@ export default function QuickReportPage() {
   const [proExporting, setProExporting] = useState(false);
   const [showNativeTemplates, setShowNativeTemplates] = useState(false);
 
+  // 快速报告统一使用“摘要与大纲 → 分批生成页面”的专业流程。
+  useEffect(() => {
+    setProMode(true);
+  }, [setProMode]);
+
   // 生成中计时
   useEffect(() => {
     if (quickStatus !== "generating" || !quickStartedAt) {
@@ -95,7 +103,7 @@ export default function QuickReportPage() {
 
   // 专业版生成计时
   useEffect(() => {
-    if ((proStage !== "extracting" && proStage !== "planning") || !proStartedAt) {
+    if (!["extracting", "outlining", "generatingSlides"].includes(proStage) || !proStartedAt) {
       setProElapsed(0);
       return;
     }
@@ -254,11 +262,13 @@ export default function QuickReportPage() {
   const totalChars = quickTranscripts.reduce((s, t) => s + t.content.length, 0);
 
   // 专业版状态
-  const isProGenerating = proStage === "extracting" || proStage === "planning";
+  const isProGenerating = ["extracting", "outlining", "generatingSlides"].includes(proStage);
   const hasProResult = proStage === "done" && proSlides && proSlides.length > 0;
   const proStageLabel =
-    proStage === "extracting" ? "提取结构化洞察" :
-    proStage === "planning" ? "规划报告故事线" :
+    proStage === "extracting" ? "提取研究摘要" :
+    proStage === "outlining" ? "生成报告大纲" :
+    proStage === "generatingSlides" ? "分批生成 PPT 页面" :
+    proStage === "outlineReady" ? "大纲已完成" :
     proStage === "done" ? "规划完成" :
     proStage === "error" ? "生成失败" : "待开始";
   const isBusy = (proMode ? isProGenerating : isGenerating) || uploading;
@@ -274,32 +284,7 @@ export default function QuickReportPage() {
         </p>
       </div>
 
-      {/* 模式切换：经典版 vs 专业版 */}
-      <div className="mb-4 flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 p-1">
-        <button
-          className={`flex-1 rounded-md px-3 py-2 text-sm font-medium transition ${
-            !proMode ? "bg-white text-brand-700 shadow-sm" : "text-slate-500 hover:text-slate-700"
-          }`}
-          onClick={() => setProMode(false)}
-          disabled={isBusy}
-        >
-          经典版
-          <span className="ml-1 text-xs text-slate-400">Markdown → PPT</span>
-        </button>
-        <button
-          className={`flex-1 rounded-md px-3 py-2 text-sm font-medium transition ${
-            proMode ? "bg-white text-brand-700 shadow-sm" : "text-slate-500 hover:text-slate-700"
-          }`}
-          onClick={() => setProMode(true)}
-          disabled={isBusy}
-        >
-          专业版
-          <span className="ml-1 text-xs text-slate-400">模板化 · 咨询报告风格</span>
-        </button>
-      </div>
-
-      {/* 专业版选项 */}
-      {proMode && (
+      {/* 报告选项 */}
         <div className="mb-4 rounded-xl border border-brand-200 bg-brand-50/50 p-4">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <label className="text-xs">
@@ -350,18 +335,19 @@ export default function QuickReportPage() {
             </label>
           </div>
           <p className="mt-2 text-xs text-slate-400">
-            专业版采用两步 AI 调用：先提取结构化洞察，再规划报告故事线和逐页内容，AI 不直接生成坐标，布局由模板控制。
+            先生成研究摘要和报告大纲，确认结构后再分批生成 PPT 页面，降低长 JSON 截断风险。
           </p>
         </div>
-      )}
 
       {/* 步骤指示器 */}
       <div className="mb-6 flex items-center gap-2 text-xs">
-        <StepBadge n={1} label="上传笔录" active={quickTranscripts.length === 0 && !hasResult} done={quickTranscripts.length > 0} />
+        <StepBadge n={1} label="上传笔录" active={quickTranscripts.length === 0} done={quickTranscripts.length > 0} />
         <span className="text-slate-300">→</span>
-        <StepBadge n={2} label="生成报告" active={isGenerating} done={hasResult === true} />
+        <StepBadge n={2} label="摘要与大纲" active={proStage === "extracting" || proStage === "outlining"} done={["outlineReady", "generatingSlides", "done"].includes(proStage)} />
         <span className="text-slate-300">→</span>
-        <StepBadge n={3} label="导出" active={hasResult === true} done={false} />
+        <StepBadge n={3} label="生成页面" active={proStage === "generatingSlides"} done={proStage === "done"} />
+        <span className="text-slate-300">→</span>
+        <StepBadge n={4} label="导出" active={proStage === "done"} done={false} />
       </div>
 
       {/* Step 1: 上传区域 */}
@@ -493,15 +479,11 @@ export default function QuickReportPage() {
         <button
           className="mt-5 w-full rounded-xl bg-brand-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-brand-900/20 transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
           disabled={quickTranscripts.length === 0 || isBusy}
-          onClick={() => void (proMode ? startProReport() : startQuickReport())}
+          onClick={() => void startProReport()}
         >
-          {proMode
-            ? isProGenerating
-              ? `[${proStageLabel}] AI 分析中... ${proElapsed > 0 ? `(${proElapsed}s)` : ""}`
-              : `生成专业版报告${quickTranscripts.length > 0 ? `（${quickTranscripts.length} 份笔录）` : ""}`
-            : isGenerating
-              ? `AI 分析笔录中... ${elapsed > 0 ? `(${elapsed}s)` : ""}`
-              : `一键生成报告${quickTranscripts.length > 0 ? `（${quickTranscripts.length} 份笔录）` : ""}`}
+          {isProGenerating
+            ? `[${proStageLabel}] AI 分析中... ${proElapsed > 0 ? `(${proElapsed}s)` : ""}`
+            : `生成研究摘要与报告大纲${quickTranscripts.length > 0 ? `（${quickTranscripts.length} 份笔录）` : ""}`}
         </button>
       </div>
 
@@ -516,11 +498,54 @@ export default function QuickReportPage() {
               </p>
               <p className="text-xs text-brand-600">
                 {proStage === "extracting"
-                  ? "正在从笔录中提取主题、发现、痛点、原因、机会和建议"
-                  : "正在规划报告故事线、选择页面版式、填写每页内容"}
+                  ? proProgress.total > 0
+                    ? `${proProgress.retrying ? "正在重试失败批次" : "正在并行提取核心洞察"} · 已完成 ${proProgress.completed}/${proProgress.total} 批；全部完成后将统一规划故事线`
+                    : "正在切分笔录并准备并行分析"
+                  : proStage === "outlining"
+                    ? "正在生成研究摘要、故事线和轻量页面目录"
+                    : `正在按大纲分批生成页面内容 · 已完成 ${proProgress.completed}/${proProgress.total} 批`}
               </p>
+              {proStage === "extracting" && proProgress.total > 0 && (
+                <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-brand-100">
+                  <div
+                    className="h-full rounded-full bg-brand-500 transition-all duration-300"
+                    style={{ width: `${Math.round((proProgress.completed / proProgress.total) * 100)}%` }}
+                  />
+                </div>
+              )}
             </div>
           </div>
+        </div>
+      )}
+
+      {proStage === "outlineReady" && proOutline && proStoryline && (
+        <div className="mt-6 rounded-2xl border border-brand-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs font-medium text-brand-700">研究摘要与报告大纲已完成</p>
+              <h2 className="mt-1 text-xl font-bold text-slate-950">{proStoryline.reportTitle || "定性研究报告"}</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                {Array.isArray(proStoryline.executiveSummary)
+                  ? proStoryline.executiveSummary.join("；")
+                  : String(proStoryline.executiveSummary || "")}
+              </p>
+            </div>
+            <button className="btn-primary shrink-0" onClick={() => void generateProSlides()}>
+              按此大纲生成 PPT
+            </button>
+          </div>
+          <div className="mt-5 space-y-2">
+            {proOutline.map((slide, index) => (
+              <div key={slide.slideId} className="flex gap-3 rounded-lg bg-slate-50 px-3 py-2 text-sm">
+                <span className="w-6 shrink-0 font-medium text-brand-700">{index + 1}</span>
+                <div>
+                  <p className="font-medium text-slate-800">{slide.title}</p>
+                  {slide.coreMessage && <p className="mt-0.5 text-xs text-slate-500">{slide.coreMessage}</p>}
+                </div>
+              </div>
+            ))}
+          </div>
+          {proError && <p className="mt-3 text-xs text-red-600">页面生成失败：{proError}。大纲已保留，可重新生成。</p>}
         </div>
       )}
 

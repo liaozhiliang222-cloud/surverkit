@@ -23,21 +23,23 @@ export interface Env {
 }
 
 /**
- * 百炼免费模型列表（按优先级排序）
+ * 百炼免费额度模型列表（按优先级排序）
  *
- * 每个模型有独立的免费额度（100 万 token），配额耗尽时自动降级到下一个。
- * 包含通义千问、KIMI、GLM 等多厂商模型，提高可用性。
+ * ⚠️ 只有在百炼控制台"免费额度"页面有独立 token 额度的模型才能放在这里！
+ * 每个模型约 100 万免费 token，配额耗尽时自动降级到下一个。
+ * 当所有免费模型都耗尽时，报错提示用户（不静默切换到付费模型）。
+ *
+ * 免费额度来源：阿里云百炼 → 用量 & 费用 → 免费额度（每个模型独立计算）
+ * 截止 2026-07-22 确认有免费额度的模型：
  */
 const DEFAULT_FREE_MODELS = [
-  "qwen3.7-plus",       // 阿里通义千问 3.7-plus，综合能力强
-  "kimi-k2.6",          // 月之暗面 KIMI，长文本处理优秀
-  "qwen3.7-max",        // 阿里通义千问 3.7-max，推理能力强
-  "glm-5.2",            // 智谱 GLM-5.2，中文理解优秀
-  "kimi-k2.7-code",     // 月之暗面 KIMI 代码版，结构化输出好
-  "qwen-turbo",         // 阿里通义千问 turbo，速度快，永久免费
-  "deepseek-v4-flash",  // DeepSeek V4，推理能力强
-  "qwen-plus",          // 阿里通义千问 plus
-  "qwen-max",           // 阿里通义千问 max
+  "qwen3.7-plus",            // 主力，综合能力强（额度 1M, 到期 09/01）
+  "qwen3.7-max",             // 推理能力强（额度 ~915K, 到期 08/20）
+  "kimi-k2.6",               // 长文本优秀（有免费额度）
+  "kimi-k2.7-code",          // 结构化输出好（额度 ~999K, 到期 09/14）
+  "glm-5.2",                 // 中文理解优秀（额度 ~999K, 到期 09/15）
+  "deepseek-v4-pro",         // DeepSeek V4 Pro，推理能力强（有免费额度）
+  "qwen3.7-max-preview",     // preview 版（额度 1M, 到期 08/24）
 ];
 
 /**
@@ -98,6 +100,7 @@ export async function chat(
   user: string,
   temperature = 0.2,
   userApiKey?: string,
+  options: { enableThinking?: boolean; maxTokens?: number } = {},
 ): Promise<ChatResult> {
   const apiKey = userApiKey || env.DASHSCOPE_API_KEY;
   if (!apiKey) {
@@ -105,10 +108,10 @@ export async function chat(
   }
 
   const baseUrl = (env.AI_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/$/, "");
-  const timeoutMs = parseInt(env.AI_TIMEOUT_MS || "120000", 10);
+  const timeoutMs = parseInt(env.AI_TIMEOUT_MS || "110000", 10);
 
   // 构建模型列表：首选模型 + 环境变量备用模型 + 内置默认列表（去重）
-  const preferredModel = env.AI_MODEL || "qwen-turbo";
+  const preferredModel = env.AI_MODEL || "qwen3.7-plus";
   const envFallbacks = env.AI_FALLBACK_MODELS
     ? env.AI_FALLBACK_MODELS.split(",").map(s => s.trim()).filter(Boolean)
     : [];
@@ -132,6 +135,8 @@ export async function chat(
       ],
       temperature,
       response_format: { type: "json_object" },
+      ...(options.enableThinking !== undefined ? { enable_thinking: options.enableThinking } : {}),
+      ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
     });
 
     const controller = new AbortController();
@@ -191,10 +196,8 @@ export async function chat(
         throw e;
       }
       if (e instanceof Error && e.name === "AbortError") {
-        // 超时也降级到下一个模型
-        console.log(`[AI] 模型 ${model} 调用超时，降级到下一个模型`);
-        lastError = new HttpError(504, `AI 调用超时（${timeoutMs}ms）`);
-        continue;
+        // 超时通常意味着当前请求体过大；继续串行尝试全部备用模型会把等待放大数倍。
+        throw new HttpError(504, `AI 调用超时（${timeoutMs}ms），请缩小单批内容后重试`);
       }
       throw new HttpError(502, `无法连接 AI 服务：${(e as Error).message}`);
     } finally {
@@ -203,7 +206,7 @@ export async function chat(
   }
 
   // 所有模型都失败了
-  throw new HttpError(503, `所有 AI 模型免费额度已耗尽。已尝试: ${triedModels.join(" → ")}。请在阿里云百炼控制台充值或关闭"免费额度用完即停"模式。`);
+  throw new HttpError(503, `所有 AI 模型免费额度已耗尽。已尝试: ${triedModels.join(" → ")}。请在阿里云百炼控制台确认免费额度余量，或稍后重试。`);
 }
 
 /**
@@ -224,13 +227,14 @@ export async function chatWithRetry(
   maxRetries = 2,
   requiredFields: string[] | null = null,
   userApiKey?: string,
+  options: { enableThinking?: boolean; maxTokens?: number } = {},
 ): Promise<ChatResult> {
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const retryTemp = temperature + 0.1 * attempt;
-      const result = await chat(env, system, user, retryTemp, userApiKey);
+      const result = await chat(env, system, user, retryTemp, userApiKey, options);
 
       // 结构校验
       if (requiredFields && result.data && typeof result.data === "object") {

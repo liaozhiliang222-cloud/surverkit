@@ -37,9 +37,9 @@ run_worker_first = true
 # ============================================================
 [vars]
 AI_MODEL = "qwen3.7-plus"
-AI_FALLBACK_MODELS = "kimi-k2.6,qwen3.7-max,glm-5.2,kimi-k2.7-code,qwen-turbo,deepseek-v4-flash,qwen-plus,qwen-max"
+AI_FALLBACK_MODELS = "qwen3.7-max,kimi-k2.6,kimi-k2.7-code,glm-5.2,deepseek-v4-pro,qwen3.7-max-preview"
 AI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-AI_TIMEOUT_MS = "120000"
+AI_TIMEOUT_MS = "110000"
 # 同源部署后 CORS 白名单可简化（前端和 API 同域）
 # 保留 localhost 用于本地开发调试
 ALLOWED_ORIGINS = "http://localhost:5173,http://localhost:8788"
